@@ -59,6 +59,7 @@ export type FlatServerOption = {
   name: string;
   recommended: boolean;
   reachability?: UserNodeReachability;
+  selectableProtocols?: ProtocolKind[];
 };
 
 /**
@@ -78,6 +79,7 @@ export const buildFlatServerOptions = (
         name: endpoint.name,
         recommended: endpoint.recommended ?? Boolean(node.recommended),
         reachability: endpoint.reachability ?? node.reachability,
+        selectableProtocols: endpoint.selectableProtocols ?? node.selectableProtocols,
       }));
     }
     return [
@@ -88,6 +90,7 @@ export const buildFlatServerOptions = (
         name: node.name,
         recommended: Boolean(node.recommended),
         reachability: node.reachability,
+        selectableProtocols: node.selectableProtocols,
       },
     ];
   });
@@ -271,7 +274,10 @@ export function CreateKeyWizard({
     canPickNode && selectedNode
       ? (quotaByNode.get(selectedNode.id)?.full ?? false)
       : false;
-  const nodeProtocols: ProtocolKind[] = nodeSelectableProtocols(selectedNode);
+  const nodeProtocols: ProtocolKind[] =
+    selectedOption?.selectableProtocols?.length
+      ? selectedOption.selectableProtocols
+      : nodeSelectableProtocols(selectedNode);
 
   // Keep the selected protocol valid for the chosen node.
   React.useEffect(() => {

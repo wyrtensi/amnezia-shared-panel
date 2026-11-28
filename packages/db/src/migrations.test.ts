@@ -574,3 +574,30 @@ describe("0072_node_egress_and_endpoint_variants", () => {
     expect(sql).toContain(`AND "k"."protocol" = 'awg3'`);
   });
 });
+
+describe("0073_bridge_wytunnel_and_key_notices", () => {
+  const sql = readFileSync(
+    fileURLToPath(
+      new URL("../migrations/0073_bridge_wytunnel_and_key_notices.sql", import.meta.url),
+    ),
+    "utf8",
+  );
+
+  it("adds wytunnel bridge transport columns with backwards-compatible defaults", () => {
+    expect(sql).toContain('ADD COLUMN "default_transport" text DEFAULT \'frp_tcp\' NOT NULL');
+    expect(sql).toContain('ADD COLUMN "frps_enabled" boolean DEFAULT true NOT NULL');
+    expect(sql).toContain('ADD COLUMN "transport" text DEFAULT \'frp_tcp\' NOT NULL');
+    expect(sql).toContain('ADD COLUMN "transport_port" integer');
+    expect(sql).toContain('ADD COLUMN "transport_config_json" jsonb DEFAULT \'{}\'::jsonb NOT NULL');
+    expect(sql).toContain('ADD COLUMN "observed_telemetry" jsonb');
+  });
+
+  it("adds key-update notice, config delivery, and per-variant protocol columns nullable", () => {
+    for (const table of ["nodes", "node_egress_ips", "node_vpn_endpoints"]) {
+      expect(sql).toContain(`ALTER TABLE "${table}" ADD COLUMN "key_update_notified_at" timestamp with time zone;`);
+      expect(sql).toContain(`ALTER TABLE "${table}" ADD COLUMN "key_update_notify_note" text;`);
+    }
+    expect(sql).toContain('ALTER TABLE "node_vpn_endpoints" ADD COLUMN "enabled_protocols" jsonb;');
+    expect(sql).toContain('ALTER TABLE "vpn_keys" ADD COLUMN "config_delivered_at" timestamp with time zone;');
+  });
+});

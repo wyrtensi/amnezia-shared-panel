@@ -63,6 +63,7 @@ const baseBridge = (over: Partial<Bridge> = {}): Bridge => ({
       nodeName: "de-01",
       publicUdpPort: 30001,
       state: "active",
+      transport: "frp_tcp",
       registration: {
         status: "online",
         marker: "m1",
@@ -922,5 +923,82 @@ describe("FleetTopologyMap SSR markup", () => {
     expect(graph.exits.map((exit) => exit.ipv4)).toContain("198.51.100.44");
     expect(graph.exits.map((exit) => exit.ipv4)).toContain("192.0.2.55");
     expect(graph.exits.map((exit) => exit.ipv4)).not.toContain("vpn.example.com");
+  });
+
+  it("propagates onlinePeerCount across bridge, node, entry, and exit topology cards", () => {
+    const bridge = baseBridge({ onlinePeerCount: 5 });
+    const node = baseNode({
+      id: "n-online",
+      name: "de-online",
+      onlinePeerCount: 9,
+      egressMode: "routed",
+      egressDaemonState: "routed_active",
+      egressIps: [
+        {
+          id: "ex-online",
+          nodeId: "n-online",
+          ipv4: "198.51.100.77",
+          label: "DE Exit",
+          interfaceName: "eth0",
+          gatewayIpv4: "198.51.100.1",
+          routingTableId: 200,
+          dnsPrimary: "1.1.1.1",
+          dnsSecondary: null,
+          amneziaDnsDnat: true,
+          enforceDnsDnat: false,
+          allowAsEntry: false,
+          enabled: true,
+          hostState: "active",
+          hostDetail: null,
+          observedSubnetCidr: null,
+          detectedGatewayIpv4: null,
+          txBytes: "0",
+          txPackets: "0",
+          hostObservedAt: null,
+          onlinePeerCount: 4,
+        },
+      ],
+      publicEndpoints: [
+        {
+          id: "ep-online",
+          ordinal: 1,
+          name: "DE Entry",
+          publicAddress: "198.51.100.10",
+          enabled: true,
+          reachabilityEnabled: true,
+          probeStatus: "ok",
+          probeCheckedAt: null,
+          probeDetail: null,
+          egressIpId: "ex-online",
+          effectiveEgressIp: "198.51.100.77",
+          onlinePeerCount: 4,
+        },
+      ],
+    });
+    const routeByNode = new Map<string, NodeRouteLabel>([
+      [
+        "n-online",
+        {
+          bridgeId: "b-1",
+          bridgeName: "Bridge MSK",
+          entry: "203.0.113.5:30001",
+          revision: 1,
+        },
+      ],
+    ]);
+
+    const graph = buildFleetTopologyGraph({
+      nodes: [node],
+      bridges: [bridge],
+      routeByNode,
+      serviceChecks: [],
+      activeKeysCount: 12,
+      onlineDevicesCount: 9,
+    });
+
+    expect(graph.bridges[0]?.onlinePeerCount).toBe(5);
+    expect(graph.nodes[0]?.onlinePeerCount).toBe(9);
+    expect(graph.entries[0]?.onlinePeerCount).toBe(4);
+    expect(graph.exits[0]?.onlinePeerCount).toBe(4);
   });
 });

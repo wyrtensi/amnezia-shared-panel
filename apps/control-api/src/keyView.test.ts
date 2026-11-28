@@ -395,3 +395,69 @@ describe("egress info on the owner-facing key payload", () => {
     expect(payload.egress).toEqual(sampleEgress);
   });
 });
+
+describe("manual server-change update notice on owner-facing key payload", () => {
+  it("picks the newest notice across node, egress IP, and endpoint for active keys", () => {
+    const payload = toKeyView({
+      actor: owner,
+      key: row({ createdAt: new Date("2026-11-01T00:00:00.000Z") }),
+      node: NODE,
+      current: null,
+      policy: defaultPortalPolicy,
+      activeByProfile: new Map(),
+      serverUpdateCandidates: [
+        { scope: "node", notifiedAt: new Date("2026-11-10T00:00:00.000Z"), note: "Node reboot" },
+        {
+          scope: "exit",
+          notifiedAt: new Date("2026-11-20T00:00:00.000Z"),
+          note: "Updated DNS settings",
+        },
+        { scope: "endpoint", notifiedAt: new Date("2026-11-15T00:00:00.000Z"), note: null },
+      ],
+    });
+    expect(payload.serverUpdate).toEqual({
+      scope: "exit",
+      notifiedAt: "2026-11-20T00:00:00.000Z",
+      note: "Updated DNS settings",
+    });
+  });
+
+  it("clears once owner delivers config after notifiedAt and ignores keys created after notifiedAt", () => {
+    const notifiedAt = new Date("2026-11-20T00:00:00.000Z");
+    const deliveredAfter = toKeyView({
+      actor: owner,
+      key: row({
+        createdAt: new Date("2026-11-01T00:00:00.000Z"),
+        configDeliveredAt: new Date("2026-11-20T00:05:00.000Z"),
+      }),
+      node: NODE,
+      current: null,
+      policy: defaultPortalPolicy,
+      activeByProfile: new Map(),
+      serverUpdateCandidates: [{ scope: "node", notifiedAt, note: null }],
+    });
+    expect(deliveredAfter.serverUpdate).toBeUndefined();
+
+    const createdAfter = toKeyView({
+      actor: owner,
+      key: row({ createdAt: new Date("2026-11-21T00:00:00.000Z") }),
+      node: NODE,
+      current: null,
+      policy: defaultPortalPolicy,
+      activeByProfile: new Map(),
+      serverUpdateCandidates: [{ scope: "node", notifiedAt, note: null }],
+    });
+    expect(createdAfter.serverUpdate).toBeUndefined();
+
+    const revoked = toKeyView({
+      actor: owner,
+      key: row({ state: "revoked", createdAt: new Date("2026-11-01T00:00:00.000Z") }),
+      node: NODE,
+      current: null,
+      policy: defaultPortalPolicy,
+      activeByProfile: new Map(),
+      serverUpdateCandidates: [{ scope: "node", notifiedAt, note: null }],
+    });
+    expect(revoked.serverUpdate).toBeUndefined();
+  });
+});

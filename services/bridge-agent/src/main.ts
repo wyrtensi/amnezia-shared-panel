@@ -3,6 +3,7 @@ import { createFrpsTlsSampler, FRPS_TRUST_DIRECTORY } from "./frpsTls.js";
 import { createHostMetricsSampler } from "./hostMetrics.js";
 import { createServer } from "./server.js";
 import { readAgentVersion } from "./types.js";
+import { readWytunnelInstances } from "./wytunnel.js";
 
 const log = (line: string): void => {
   process.stdout.write(`${new Date().toISOString()} ${line}\n`);
@@ -28,12 +29,16 @@ const main = (): void => {
       frps: config.frps,
       update: config.update,
       sampleHostMetrics: createHostMetricsSampler(config.tokenFile),
-      sampleFrpsTls: createFrpsTlsSampler(FRPS_TRUST_DIRECTORY, config.applied.controlTcpPort),
+      sampleFrpsTls: config.frps
+        ? createFrpsTlsSampler(FRPS_TRUST_DIRECTORY, config.applied.controlTcpPort)
+        : undefined,
+      sampleWytunnel: () => readWytunnelInstances(config.wytunnel.runDir, config.wytunnel.timeoutMs),
     },
     log,
   });
   server.listen(config.listen.port, config.listen.host, () => {
     log(`bridge ${config.bridgeId} agent ${agentVersion} listening on ${config.listen.host}:${config.listen.port}`);
+    log(config.frps ? "frps: enabled" : "frps: disabled (BRIDGE_FRPS_ENABLED=false)");
     log(config.update ? "updates: on (update.v1)" : "updates: off (no BRIDGE_AGENT_IMAGE_REPOSITORY)");
   });
 

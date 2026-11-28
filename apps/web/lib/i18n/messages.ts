@@ -2400,6 +2400,89 @@ const ru = {
   "audit.meta.ipv4": "IPv4",
   "audit.meta.fromIpv4": "Старый IPv4",
   "audit.meta.toIpv4": "Новый IPv4",
+
+  // Bridge WyTunnel & optional FRP
+  "bridge.transport.label": "Транспорт",
+  "bridge.transport.frp_tcp": "FRP (TCP)",
+  "bridge.transport.wytunnel": "WyTunnel (FakeTCP)",
+  "bridge.transport.defaultLabel": "Транспорт новых маршрутов",
+  "bridge.transport.configure": "Транспорт",
+  "bridge.transport.title": "Настройка транспорта маршрута",
+  "bridge.transport.desc":
+    "Выберите транспорт между мостом и нодой. WyTunnel использует FakeTCP с постоянным пулом туннелей и незаметной авто-ротацией; неактивный frpc на ноде можно отключить, чтобы он не тратил RAM и CPU.",
+  "bridge.transport.saved": "Настройки транспорта сохранены",
+  "bridge.transport.frpDesc": "Классический TCP-туннель через frpc/frps.",
+  "bridge.transport.wytunnelDesc":
+    "FakeTCP на Rust (~3 МБ RAM) с пулом туннелей, 0 ms failover и бесшовной авто-ротацией.",
+  "bridge.wytunnel.poolSize": "Туннелей в пуле на ноду",
+  "bridge.wytunnel.poolSizeHint":
+    "Рекомендуется 10 туннелей на ноду. 0 — прямой режим (один поток по требованию).",
+  "bridge.wytunnel.directMode": "Прямой (0)",
+  "bridge.wytunnel.rotateInterval": "Авто-ротация туннелей",
+  "bridge.wytunnel.rotateIntervalHint":
+    "Самый старый туннель плавно заменяется новым, чтобы сессии не жили вечно, а пользователи не замечали переключения.",
+  "bridge.wytunnel.rotateOff": "Выкл",
+  "bridge.wytunnel.rotateDrain": "Окно дожигания (сек)",
+  "bridge.wytunnel.keepalive": "Keepalive (сек)",
+  "bridge.wytunnel.transportPort": "TCP-порт WyTunnel",
+  "bridge.wytunnel.fec": "FEC (коррекция потерь)",
+  "bridge.wytunnel.fecOff": "Выкл (рекомендуется при потерях < 0.2%)",
+  "bridge.wytunnel.handshake": "Мимикрия рукопожатия",
+  "bridge.wytunnel.handshakeNone": "Выкл",
+  "bridge.wytunnel.handshakeTls": "TLS ClientHello",
+  "bridge.wytunnel.ebpf": "eBPF NIC offload (в прямом режиме)",
+  "bridge.wytunnel.advanced": "Дополнительные параметры WyTunnel",
+  "bridge.wytunnel.tunnels": "Туннели",
+  "bridge.wytunnel.rtt": "RTT пула",
+  "bridge.wytunnel.rotations": "Ротаций",
+  "bridge.wytunnel.failovers": "Переключений",
+  "bridge.wytunnel.sessions": "Сессий",
+  "bridge.wytunnel.nodeSetup":
+    "1. Установка на VPN-ноде (автоматически остановит и отключит неактивный frpc)",
+  "bridge.wytunnel.bridgeSetup": "2. Установка на хосте моста",
+  "bridge.wytunnel.disableFrpcCmd": "Отключить неактивный frpc на ноде (0 RAM / 0 CPU)",
+  "bridge.wytunnel.disableFrpsCmd": "Отключить неактивный frps на мосте (0 RAM / 0 CPU)",
+  "bridge.frps.enabledLabel": "Использовать frps на этом мосте",
+  "bridge.frps.enabledHint":
+    "Отключите, если все маршруты моста работают через WyTunnel — frps не будет потреблять RAM и CPU.",
+  "bridge.frps.disabledBadge": "frps выкл",
+  "bridge.frps.disabledHint":
+    "frps отключён в настройках моста. Чтобы освободить память и CPU на хосте моста, выполните команду ниже:",
+  "bridge.route.wytunnel": "WyTunnel",
+
+  // Topology online counters
+  "ov.map.onlineCount": "{count} онлайн",
+  "ov.map.onlineTitle": "Активные ключи онлайн (окно 180 сек, без служебного зонда)",
+
+  // Manual server-change key update notices
+  "keyCard.serverUpdateTitle": "Важные изменения на сервере — обновите ключ",
+  "keyCard.serverUpdateBody":
+    "Настройки сервера были обновлены. Заново скачайте или скопируйте ключ и импортируйте его в AmneziaVPN.",
+  "notifyKeyUpdate.button": "Уведомить об обновлении ключа",
+  "notifyKeyUpdate.activeBadge": "Уведомление активно",
+  "notifyKeyUpdate.clear": "Сбросить уведомление",
+  "notifyKeyUpdate.title": "Уведомить пользователей об обновлении ключа",
+  "notifyKeyUpdate.desc":
+    "На карточках активных ключей появится баннер с просьбой заново скачать конфиг. Уведомление пропадёт автоматически после скачивания владельцем.",
+  "notifyKeyUpdate.noteLabel": "Пояснение для пользователей (необязательно)",
+  "notifyKeyUpdate.notePlaceholder": "Например: обновили DNS и выходной IP",
+  "notifyKeyUpdate.send": "Отправить уведомление",
+  "notifyKeyUpdate.sentToast": "Уведомление отправлено ({count} активных ключей)",
+  "notifyKeyUpdate.clearedToast": "Уведомление сброшено",
+
+  // Per-variant protocols
+  "egress.variantProtocols": "Протоколы варианта",
+  "egress.variantProtocolsInherit": "Наследовать от ноды",
+
+  // Audit WyTunnel & key-update events
+  "audit.exact.vpn_bridge.transport_updated": "Обновлены настройки транспорта моста",
+  "audit.exact.vpn_bridge_route.transport_updated": "Изменён транспорт маршрута моста",
+  "audit.exact.node.key_update_notified": "Отправлено уведомление обновить ключ (нода)",
+  "audit.exact.node.key_update_notice_cleared": "Сброшено уведомление обновить ключ (нода)",
+  "audit.exact.node.egress_key_update_notified": "Отправлено уведомление обновить ключ (Exit IP)",
+  "audit.exact.node.egress_key_update_notice_cleared": "Сброшено уведомление обновить ключ (Exit IP)",
+  "audit.exact.node.endpoint_key_update_notified": "Отправлено уведомление обновить ключ (вариант)",
+  "audit.exact.node.endpoint_key_update_notice_cleared": "Сброшено уведомление обновить ключ (вариант)",
 } as const;
 
 const en = {
@@ -4725,6 +4808,89 @@ const en = {
   "audit.meta.ipv4": "IPv4",
   "audit.meta.fromIpv4": "From IPv4",
   "audit.meta.toIpv4": "To IPv4",
+
+  // Bridge WyTunnel & optional FRP
+  "bridge.transport.label": "Transport",
+  "bridge.transport.frp_tcp": "FRP (TCP)",
+  "bridge.transport.wytunnel": "WyTunnel (FakeTCP)",
+  "bridge.transport.defaultLabel": "Default route transport",
+  "bridge.transport.configure": "Transport",
+  "bridge.transport.title": "Route transport settings",
+  "bridge.transport.desc":
+    "Choose the transport between bridge and node. WyTunnel uses FakeTCP with a persistent multi-tunnel pool and seamless auto-rotation; inactive frpc can be stopped so it consumes 0 RAM/CPU.",
+  "bridge.transport.saved": "Transport settings saved",
+  "bridge.transport.frpDesc": "Classic TCP tunnel over frpc/frps.",
+  "bridge.transport.wytunnelDesc":
+    "Rust FakeTCP (~3 MB RAM) with persistent tunnel pool, 0 ms failover, and seamless auto-rotation.",
+  "bridge.wytunnel.poolSize": "Persistent tunnels per node",
+  "bridge.wytunnel.poolSizeHint":
+    "Recommended: 10 tunnels per node. Set 0 for on-demand direct mode.",
+  "bridge.wytunnel.directMode": "Direct (0)",
+  "bridge.wytunnel.rotateInterval": "Auto-rotation interval",
+  "bridge.wytunnel.rotateIntervalHint":
+    "The oldest tunnel is seamlessly replaced in the background so streams do not live forever and users notice zero drop.",
+  "bridge.wytunnel.rotateOff": "Off",
+  "bridge.wytunnel.rotateDrain": "Drain window (sec)",
+  "bridge.wytunnel.keepalive": "Keepalive (sec)",
+  "bridge.wytunnel.transportPort": "WyTunnel TCP port",
+  "bridge.wytunnel.fec": "FEC (packet loss recovery)",
+  "bridge.wytunnel.fecOff": "Off (recommended while loss < 0.2%)",
+  "bridge.wytunnel.handshake": "Handshake mimicry",
+  "bridge.wytunnel.handshakeNone": "Off",
+  "bridge.wytunnel.handshakeTls": "TLS ClientHello",
+  "bridge.wytunnel.ebpf": "eBPF NIC offload (direct mode)",
+  "bridge.wytunnel.advanced": "Advanced WyTunnel options",
+  "bridge.wytunnel.tunnels": "Tunnels",
+  "bridge.wytunnel.rtt": "Pool RTT",
+  "bridge.wytunnel.rotations": "Rotations",
+  "bridge.wytunnel.failovers": "Failovers",
+  "bridge.wytunnel.sessions": "Sessions",
+  "bridge.wytunnel.nodeSetup":
+    "1. Install on VPN node (automatically stops & disables inactive frpc)",
+  "bridge.wytunnel.bridgeSetup": "2. Install on bridge host",
+  "bridge.wytunnel.disableFrpcCmd": "Disable inactive frpc on node (0 RAM / 0 CPU)",
+  "bridge.wytunnel.disableFrpsCmd": "Disable inactive frps on bridge (0 RAM / 0 CPU)",
+  "bridge.frps.enabledLabel": "Run frps on this bridge",
+  "bridge.frps.enabledHint":
+    "Turn off on WyTunnel-only bridges so frps consumes 0 RAM and 0 CPU.",
+  "bridge.frps.disabledBadge": "frps off",
+  "bridge.frps.disabledHint":
+    "frps is disabled for this bridge. Run the command below on the bridge host to stop it and free RAM/CPU:",
+  "bridge.route.wytunnel": "WyTunnel",
+
+  // Topology online counters
+  "ov.map.onlineCount": "{count} online",
+  "ov.map.onlineTitle": "Online active keys (180s window, excluding probe keys)",
+
+  // Manual server-change key update notices
+  "keyCard.serverUpdateTitle": "Important server changes — update your key",
+  "keyCard.serverUpdateBody":
+    "Server settings have been updated. Re-download or copy your key and import it into AmneziaVPN.",
+  "notifyKeyUpdate.button": "Notify key update",
+  "notifyKeyUpdate.activeBadge": "Notice active",
+  "notifyKeyUpdate.clear": "Clear notice",
+  "notifyKeyUpdate.title": "Notify users to update their key",
+  "notifyKeyUpdate.desc":
+    "Active key cards will show a banner asking users to re-download their config. The notice clears automatically once the key owner downloads their key.",
+  "notifyKeyUpdate.noteLabel": "Note for users (optional)",
+  "notifyKeyUpdate.notePlaceholder": "E.g. updated DNS and exit routing",
+  "notifyKeyUpdate.send": "Send notice",
+  "notifyKeyUpdate.sentToast": "Notice sent ({count} active keys)",
+  "notifyKeyUpdate.clearedToast": "Notice cleared",
+
+  // Per-variant protocols
+  "egress.variantProtocols": "Variant protocols",
+  "egress.variantProtocolsInherit": "Inherit from node",
+
+  // Audit WyTunnel & key-update events
+  "audit.exact.vpn_bridge.transport_updated": "Updated bridge transport settings",
+  "audit.exact.vpn_bridge_route.transport_updated": "Changed bridge route transport",
+  "audit.exact.node.key_update_notified": "Sent key update notice (node)",
+  "audit.exact.node.key_update_notice_cleared": "Cleared key update notice (node)",
+  "audit.exact.node.egress_key_update_notified": "Sent key update notice (Exit IP)",
+  "audit.exact.node.egress_key_update_notice_cleared": "Cleared key update notice (Exit IP)",
+  "audit.exact.node.endpoint_key_update_notified": "Sent key update notice (variant)",
+  "audit.exact.node.endpoint_key_update_notice_cleared": "Cleared key update notice (variant)",
 } satisfies Record<keyof typeof ru, string>;
 
 export const messages = { ru, en } as const;

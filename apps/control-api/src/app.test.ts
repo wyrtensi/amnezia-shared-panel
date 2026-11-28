@@ -56,6 +56,8 @@ const bridgeRouteFixture = {
   bridgeId: bridgeFixture.id,
   publicUdpPort: 41000,
   state: "draft" as const,
+  transport: "frp_tcp" as const,
+  transportPort: null,
   frpProxyName: "awg-route-0d9e8f7a-6b5c-4d3e-9f2a-1b0c9d8e7f6a",
   observedOnline: null,
   observedRegistrationMarker: null,
@@ -235,6 +237,7 @@ createNode: vi.fn(() => Promise.resolve({ id: "node-1" })),
       publicUdpPort: 41000,
     }),
   ),
+  updateBridgeRouteTransport: vi.fn(() => Promise.resolve(bridgeRouteFixture)),
   listInfrastructure: vi.fn(() => Promise.resolve([])),
   getBridgeRouteTestConfig: vi.fn(() =>
     Promise.resolve({
@@ -267,6 +270,24 @@ createNode: vi.fn(() => Promise.resolve({ id: "node-1" })),
   ),
   reassignKeyEndpoint: vi.fn(() =>
     Promise.resolve({ id: "key-1", nodeId: bridgeNodeId, endpointId: "ep-2", previousEndpointId: "ep-1" }),
+  ),
+  notifyNodeKeyUpdate: vi.fn(() =>
+    Promise.resolve({ scope: "node" as const, notifiedAt: "2026-11-28T00:00:00.000Z", note: null, affectedActiveKeys: 2 }),
+  ),
+  clearNodeKeyUpdate: vi.fn(() =>
+    Promise.resolve({ scope: "node" as const, notifiedAt: null, note: null, affectedActiveKeys: 0 }),
+  ),
+  notifyNodeEgressIpKeyUpdate: vi.fn(() =>
+    Promise.resolve({ scope: "exit" as const, notifiedAt: "2026-11-28T00:00:00.000Z", note: null, affectedActiveKeys: 1 }),
+  ),
+  clearNodeEgressIpKeyUpdate: vi.fn(() =>
+    Promise.resolve({ scope: "exit" as const, notifiedAt: null, note: null, affectedActiveKeys: 0 }),
+  ),
+  notifyNodeEndpointKeyUpdate: vi.fn(() =>
+    Promise.resolve({ scope: "endpoint" as const, notifiedAt: "2026-11-28T00:00:00.000Z", note: null, affectedActiveKeys: 1 }),
+  ),
+  clearNodeEndpointKeyUpdate: vi.fn(() =>
+    Promise.resolve({ scope: "endpoint" as const, notifiedAt: null, note: null, affectedActiveKeys: 0 }),
   ),
 });
 

@@ -132,6 +132,10 @@ export type AdminNode = NodeGeneratorMetadata & {
   supportedProtocols?: ProtocolKind[];
   enabledProtocols?: ProtocolKind[] | null;
   peerCount?: number;
+  onlinePeerCount?: number;
+  onlineByProtocol?: Record<string, number>;
+  keyUpdateNotifiedAt?: string | null;
+  keyUpdateNotifyNote?: string | null;
   traffic?: { today: TrafficPair; week: TrafficPair; month: TrafficPair };
   capabilities: Record<string, unknown>;
   /** Node-agent's SERVER_PUBLIC_HOST as reported; null until reported. */

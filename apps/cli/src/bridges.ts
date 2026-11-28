@@ -32,6 +32,36 @@ export type BridgeRawApi = (path: string) => Promise<{ body: Buffer; headers: He
 export const REGISTRATION_MARKER_HEADER = "x-bridge-registration-marker";
 
 type RouteState = "draft" | "active" | "retiring";
+type RouteTransport = "frp_tcp" | "wytunnel";
+
+type WytunnelConfigView = {
+  poolSize?: number;
+  poolRotateIntervalSec?: number;
+  poolRotateDrainSec?: number;
+  keepaliveSec?: number;
+  fec?: { k: number; m: number } | null;
+  handshakeMode?: "none" | "tls_client_hello";
+  ebpfEnabled?: boolean;
+};
+
+type RouteTelemetryView = {
+  version?: string | null;
+  mode?: "direct" | "pool";
+  ebpfMode?: "nic" | "userspace_fallback";
+  uptimeSec?: number;
+  activeSessions?: number;
+  healthyStreams?: number;
+  targetStreams?: number;
+  drainingStreams?: number;
+  poolRttMs?: number | null;
+  rxPackets?: number;
+  txPackets?: number;
+  fecRecovered?: number;
+  fecLostGroups?: number;
+  keepaliveResets?: number;
+  failoversTotal?: number;
+  rotationsTotal?: number;
+};
 
 type BridgeRouteSummary = {
   id: string;
@@ -39,6 +69,10 @@ type BridgeRouteSummary = {
   nodeName?: string;
   publicUdpPort: number;
   state: RouteState;
+  transport?: RouteTransport;
+  transportPort?: number | null;
+  transportConfig?: WytunnelConfigView;
+  telemetry?: RouteTelemetryView | null;
   registration?: { status: string; marker?: string | null; observedAt?: string | null };
   verification?: RouteVerificationView;
 };
@@ -77,6 +111,11 @@ export type SetupCommands = {
   dryRun?: string;
   checkTls?: string;
   remove?: string;
+  bridgeInstall?: string;
+  bridgeDryRun?: string;
+  bridgeRemove?: string;
+  disableFrpc?: string;
+  disableFrps?: string;
   /** The digest-pinned image already in the bridge commands; null when none is available. */
   agentImage?: string | null;
 };
@@ -90,6 +129,9 @@ export type BridgeView = {
   udpPortEnd: number;
   capacity: number;
   heldPorts: number;
+  defaultTransport?: RouteTransport;
+  frpsEnabled?: boolean;
+  onlinePeerCount?: number;
   managementStatus: string;
   lastObservedAt: string | null;
   management?: BridgeManagementView | null;
@@ -119,6 +161,10 @@ export type NodeRouteView = {
   publicUdpPort: number;
   frpProxyName?: string | null;
   state: RouteState;
+  transport?: RouteTransport;
+  transportPort?: number | null;
+  transportConfig?: WytunnelConfigView;
+  telemetry?: RouteTelemetryView | null;
   bridgeName?: string;
   bridgePublicIpv4?: string;
   bridgeManagementStatus?: string;
@@ -261,7 +307,17 @@ export function intFlag(args: string[], name: string): number | undefined {
   return Number(raw);
 }
 
-const SETUP_KEYS = ["install", "dryRun", "checkTls", "remove"] as const;
+const SETUP_KEYS = [
+  "install",
+  "dryRun",
+  "checkTls",
+  "remove",
+  "bridgeInstall",
+  "bridgeDryRun",
+  "bridgeRemove",
+  "disableFrpc",
+  "disableFrps",
+] as const;
 
 function projectSetup(value: unknown): SetupCommands | undefined {
   if (typeof value !== "object" || value === null) return undefined;
@@ -328,6 +384,9 @@ export function projectBridge(b: BridgeView): Record<string, unknown> {
     udpPortEnd: b.udpPortEnd,
     capacity: b.capacity,
     heldPorts: b.heldPorts,
+    ...(b.defaultTransport ? { defaultTransport: b.defaultTransport } : {}),
+    ...(b.frpsEnabled !== undefined ? { frpsEnabled: b.frpsEnabled } : {}),
+    ...(b.onlinePeerCount !== undefined ? { onlinePeerCount: b.onlinePeerCount } : {}),
     managementStatus: b.managementStatus,
     lastObservedAt: nullable(b.lastObservedAt),
     management: projectManagement(b.management),
@@ -339,6 +398,10 @@ export function projectBridge(b: BridgeView): Record<string, unknown> {
       nodeName: nullable(r.nodeName),
       publicUdpPort: r.publicUdpPort,
       state: r.state,
+      ...(r.transport ? { transport: r.transport } : {}),
+      ...(r.transportPort !== undefined ? { transportPort: r.transportPort } : {}),
+      ...(r.transportConfig ? { transportConfig: r.transportConfig } : {}),
+      ...(r.telemetry !== undefined ? { telemetry: r.telemetry } : {}),
       registration: {
         status: r.registration?.status ?? "unknown",
         marker: nullable(r.registration?.marker),
@@ -358,6 +421,10 @@ export function projectRoute(r: NodeRouteView): Record<string, unknown> {
     publicUdpPort: r.publicUdpPort,
     frpProxyName: nullable(r.frpProxyName),
     state: r.state,
+    ...(r.transport ? { transport: r.transport } : {}),
+    ...(r.transportPort !== undefined ? { transportPort: r.transportPort } : {}),
+    ...(r.transportConfig ? { transportConfig: r.transportConfig } : {}),
+    ...(r.telemetry !== undefined ? { telemetry: r.telemetry } : {}),
     bridgeName: nullable(r.bridgeName),
     bridgePublicIpv4: nullable(r.bridgePublicIpv4),
     bridgeManagementStatus: nullable(r.bridgeManagementStatus),
@@ -505,7 +572,25 @@ function describeRoute(route: NodeRouteView): string {
       : route.observedOnline === false
         ? "absent"
         : "unobserved";
-  return `${route.id}  ${route.state}  ${show(route.bridgeName)} ${target}  proxy=${show(route.frpProxyName)}  ${observed}  ${verified}`;
+  const transportTag =
+    route.transport === "wytunnel"
+      ? (() => {
+          const tel = route.telemetry;
+          const cfg = route.transportConfig;
+          const portPart = route.transportPort ? `:${route.transportPort}` : "";
+          const poolPart =
+            tel?.mode === "pool" && tel.targetStreams !== undefined
+              ? ` pool ${tel.healthyStreams ?? 0}/${tel.targetStreams}` +
+                (tel.poolRttMs != null ? ` ${Math.round(tel.poolRttMs)}ms` : "") +
+                (tel.rotationsTotal ? ` rot=${tel.rotationsTotal}` : "") +
+                (tel.failoversTotal ? ` fo=${tel.failoversTotal}` : "")
+              : cfg?.poolSize
+                ? ` pool=${cfg.poolSize}`
+                : " direct";
+          return `wytunnel${portPart}${poolPart}`;
+        })()
+      : `proxy=${show(route.frpProxyName)}`;
+  return `${route.id}  ${route.state}  ${show(route.bridgeName)} ${target}  ${transportTag}  ${observed}  ${verified}`;
 }
 
 /** Pure renderer for `bridge-routes`, kept separate so it is testable. */
@@ -523,12 +608,14 @@ export function renderNodeRoutes(view: NodeRoutesView): string[] {
   return lines;
 }
 
-function describeFrps(m: BridgeManagementView | null | undefined): string {
+function describeFrps(m: BridgeManagementView | null | undefined, frpsEnabled?: boolean): string {
+  if (frpsEnabled === false) return "disabled";
   if (!m || m.frpsReachable === null || m.frpsReachable === undefined) return "—";
   return m.frpsReachable ? show(m.frpsVersion) : "unreachable";
 }
 
 function describeFrpsTls(bridge: BridgeView): string {
+  if (bridge.frpsEnabled === false) return "—";
   const status = currentFrpsTls(bridge);
   if (!status) return "—";
   if (status.state === "unconfigured") return "unconfigured";
@@ -539,14 +626,15 @@ function describeFrpsTls(bridge: BridgeView): string {
 
 function renderBridgeTable(bridges: BridgeView[]): string[] {
   if (bridges.length === 0) return ["(no bridges)"];
-  const header = ["id", "name", "ipv4", "mgmt", "agent", "frps", "tls", "ports", "routes", "observed"];
+  const header = ["id", "name", "ipv4", "transport", "mgmt", "agent", "frps", "tls", "ports", "routes", "observed"];
   const rows = bridges.map((bridge) => [
     bridge.id,
     bridge.name,
     bridge.publicIpv4,
+    bridge.defaultTransport ?? "frp_tcp",
     bridge.managementStatus,
     show(bridge.management?.agentVersion),
-    describeFrps(bridge.management),
+    describeFrps(bridge.management, bridge.frpsEnabled),
     describeFrpsTls(bridge),
     `${bridge.heldPorts}/${bridge.capacity}`,
     String(bridge.routes.length),
@@ -589,10 +677,110 @@ export async function cmdBridges(api: BridgeApi, args: string[]): Promise<void> 
   for (const line of renderBridgeTable(bridges)) console.log(line);
 }
 
+function parseOnOffFlag(raw: string, flagName: string, usage: string): boolean {
+  const norm = raw.trim().toLowerCase();
+  if (norm === "on" || norm === "true") return true;
+  if (norm === "off" || norm === "false") return false;
+  throw new Error(`--${flagName} expects on/true or off/false, got "${raw}"\n${usage}`);
+}
+
+function parseTransportFlag(raw: string, flagName: string, usage: string): RouteTransport {
+  const norm = raw.trim().toLowerCase();
+  if (norm === "frp_tcp" || norm === "wytunnel") return norm;
+  throw new Error(`--${flagName} expects frp_tcp or wytunnel, got "${raw}"\n${usage}`);
+}
+
+const WYTUNNEL_VALUE_FLAGS = [
+  "transport",
+  "transport-port",
+  "pool-size",
+  "pool-rotate-interval",
+  "pool-rotate-drain",
+  "keepalive",
+  "fec",
+  "handshake",
+  "ebpf",
+];
+
+function parseWytunnelOptions(args: string[], usage: string): {
+  transport?: RouteTransport;
+  transportPort?: number;
+  transportConfig?: WytunnelConfigView;
+} {
+  const out: {
+    transport?: RouteTransport;
+    transportPort?: number;
+    transportConfig?: WytunnelConfigView;
+  } = {};
+  const rawTransport = flagOf(args, "transport");
+  if (rawTransport !== undefined) {
+    out.transport = parseTransportFlag(rawTransport, "transport", usage);
+  }
+  const transportPort = intFlag(args, "transport-port");
+  if (transportPort !== undefined) out.transportPort = transportPort;
+  const cfg: WytunnelConfigView = {};
+  const poolSize = intFlag(args, "pool-size");
+  if (poolSize !== undefined) cfg.poolSize = poolSize;
+  const rotateInterval = intFlag(args, "pool-rotate-interval");
+  if (rotateInterval !== undefined) cfg.poolRotateIntervalSec = rotateInterval;
+  const rotateDrain = intFlag(args, "pool-rotate-drain");
+  if (rotateDrain !== undefined) cfg.poolRotateDrainSec = rotateDrain;
+  const keepalive = intFlag(args, "keepalive");
+  if (keepalive !== undefined) cfg.keepaliveSec = keepalive;
+  const rawFec = flagOf(args, "fec");
+  if (rawFec !== undefined) {
+    const norm = rawFec.trim().toLowerCase();
+    if (norm === "off" || norm === "none" || norm === "null") {
+      cfg.fec = null;
+    } else {
+      const m = /^(\d+):(\d+)$/.exec(norm);
+      if (!m) throw new Error(`--fec expects K:M (e.g. 20:1) or off, got "${rawFec}"\n${usage}`);
+      cfg.fec = { k: Number(m[1]), m: Number(m[2]) };
+    }
+  }
+  const rawHandshake = flagOf(args, "handshake");
+  if (rawHandshake !== undefined) {
+    const norm = rawHandshake.trim().toLowerCase();
+    if (norm !== "none" && norm !== "tls_client_hello") {
+      throw new Error(`--handshake expects none or tls_client_hello, got "${rawHandshake}"\n${usage}`);
+    }
+    cfg.handshakeMode = norm;
+  }
+  const rawEbpf = flagOf(args, "ebpf");
+  if (rawEbpf !== undefined) {
+    cfg.ebpfEnabled = parseOnOffFlag(rawEbpf, "ebpf", usage);
+  }
+  if (Object.keys(cfg).length > 0) out.transportConfig = cfg;
+  return out;
+}
+
+function printRouteSetupCommands(route: NodeRouteView): void {
+  const setup = projectSetup(route.setupCommands);
+  if (!setup) return;
+  if (route.transport === "wytunnel") {
+    console.log("setup commands (WyTunnel):");
+    if (setup.dryRun) console.log(`  node dry-run:   ${setup.dryRun}`);
+    if (setup.install) console.log(`  node install:   ${setup.install}`);
+    if (setup.bridgeDryRun) console.log(`  bridge dry-run: ${setup.bridgeDryRun}`);
+    if (setup.bridgeInstall) console.log(`  bridge install: ${setup.bridgeInstall}`);
+    if (setup.disableFrpc) console.log(`  disable frpc:   ${setup.disableFrpc}`);
+    if (setup.disableFrps) console.log(`  disable frps:   ${setup.disableFrps}`);
+    return;
+  }
+  console.log("setup commands (run them on the node host yourself):");
+  for (const key of SETUP_KEYS) if (setup[key]) console.log(`  ${key}: ${setup[key]}`);
+  console.log("  The helper detects the local AWG port. If it asks, append --local-udp-port <udp> and/or --local-ip <ipv4> to install.");
+  console.log("  An existing node gets install-frpc.sh by re-running scripts/add-node.sh (it re-syncs infra/node).");
+}
+
 export async function cmdBridgeAdd(api: BridgeApi, args: string[]): Promise<void> {
   const usage =
-    "Usage: bridge-add --name=<name> --ipv4=<public ipv4> [--control-port=7000] [--udp-start=41000] [--udp-end=41031] --confirm";
-  assertStrictArgs(args, { positionals: 0, valueFlags: ["name", "ipv4", "control-port", "udp-start", "udp-end"], usage });
+    "Usage: bridge-add --name=<name> --ipv4=<public ipv4> [--control-port=7000] [--udp-start=41000] [--udp-end=41031] [--default-transport=frp_tcp|wytunnel] [--frps=on|off] --confirm";
+  assertStrictArgs(args, {
+    positionals: 0,
+    valueFlags: ["name", "ipv4", "control-port", "udp-start", "udp-end", "default-transport", "frps"],
+    usage,
+  });
   const name = flagOf(args, "name");
   const publicIpv4 = flagOf(args, "ipv4");
   if (!name || !publicIpv4) throw new Error(usage);
@@ -603,6 +791,20 @@ export async function cmdBridgeAdd(api: BridgeApi, args: string[]): Promise<void
   if (controlPort !== undefined) body.controlTcpPort = controlPort;
   if (udpStart !== undefined) body.udpPortStart = udpStart;
   if (udpEnd !== undefined) body.udpPortEnd = udpEnd;
+  const rawDefaultTransport = flagOf(args, "default-transport");
+  const defaultTransport =
+    rawDefaultTransport !== undefined
+      ? parseTransportFlag(rawDefaultTransport, "default-transport", usage)
+      : undefined;
+  if (defaultTransport !== undefined) {
+    body.defaultTransport = defaultTransport;
+  }
+  const rawFrps = flagOf(args, "frps");
+  const frpsEnabled =
+    rawFrps !== undefined ? parseOnOffFlag(rawFrps, "frps", usage) : undefined;
+  if (frpsEnabled !== undefined) {
+    body.frpsEnabled = frpsEnabled;
+  }
   if (!confirmed(args)) {
     return preview([
       `Would register bridge "${name}" at ${publicIpv4}` +
@@ -610,6 +812,8 @@ export async function cmdBridgeAdd(api: BridgeApi, args: string[]): Promise<void
         (udpStart !== undefined || udpEnd !== undefined
           ? ` udp ${udpStart ?? "default"}-${udpEnd ?? "default"}`
           : "") +
+        (defaultTransport ? ` default-transport=${defaultTransport}` : "") +
+        (frpsEnabled !== undefined ? ` frps=${frpsEnabled ? "on" : "off"}` : "") +
         " (metadata only; nothing is installed on the host).",
     ]);
   }
@@ -623,10 +827,10 @@ export async function cmdBridgeAdd(api: BridgeApi, args: string[]): Promise<void
 
 export async function cmdBridgeUpdate(api: BridgeApi, args: string[]): Promise<void> {
   const usage =
-    "Usage: bridge-update <bridge-id> [--name=<name>] [--panel-dns=<hostname|none>] [--reachability=on|off] [--json]";
+    "Usage: bridge-update <bridge-id> [--name=<name>] [--panel-dns=<hostname|none>] [--reachability=on|off] [--default-transport=frp_tcp|wytunnel] [--frps=on|off] [--json]";
   assertStrictArgs(args, {
     positionals: 1,
-    valueFlags: ["name", "panel-dns", "reachability"],
+    valueFlags: ["name", "panel-dns", "reachability", "default-transport", "frps"],
     usage,
   });
   const id = requireUuid(positionals(args)[0], "bridge-id", usage);
@@ -645,14 +849,15 @@ export async function cmdBridgeUpdate(api: BridgeApi, args: string[]): Promise<v
   }
   const rawReachability = flagOf(args, "reachability");
   if (rawReachability !== undefined) {
-    const norm = rawReachability.trim().toLowerCase();
-    if (norm === "on" || norm === "true") body.reachabilityEnabled = true;
-    else if (norm === "off" || norm === "false") body.reachabilityEnabled = false;
-    else {
-      throw new Error(
-        `--reachability expects on/true or off/false, got "${rawReachability}"\n${usage}`,
-      );
-    }
+    body.reachabilityEnabled = parseOnOffFlag(rawReachability, "reachability", usage);
+  }
+  const rawDefaultTransport = flagOf(args, "default-transport");
+  if (rawDefaultTransport !== undefined) {
+    body.defaultTransport = parseTransportFlag(rawDefaultTransport, "default-transport", usage);
+  }
+  const rawFrps = flagOf(args, "frps");
+  if (rawFrps !== undefined) {
+    body.frpsEnabled = parseOnOffFlag(rawFrps, "frps", usage);
   }
   if (Object.keys(body).length === 0) throw new Error(usage);
   const bridge = await api<BridgeView>(`/api/admin/vpn-bridges/${id}`, {
@@ -663,6 +868,9 @@ export async function cmdBridgeUpdate(api: BridgeApi, args: string[]): Promise<v
   console.log(`bridge ${bridge.name} (${bridge.id}) updated: ${Object.keys(body).join(", ")}`);
   if (bridge.panelDns) {
     console.log(`  panel DNS: ${bridge.panelDns.hostname ?? "—"} (${bridge.panelDns.state})`);
+  }
+  if (body.frpsEnabled === false) {
+    console.log("  To free RAM/CPU on the bridge host, run: sudo bash /opt/amnezia-bridge/toggle-frps.sh --disable");
   }
 }
 
@@ -934,18 +1142,22 @@ export async function cmdBridgeRoutes(api: BridgeApi, args: string[]): Promise<v
 }
 
 export async function cmdBridgeRoutePrepare(api: BridgeApi, args: string[]): Promise<void> {
-  const usage = "Usage: bridge-route-prepare <node-id> <bridge-id> [--port=<udp port>] --confirm";
-  assertStrictArgs(args, { positionals: 2, valueFlags: ["port"], usage });
+  const usage =
+    "Usage: bridge-route-prepare <node-id> <bridge-id> [--port=<udp port>] [--transport=frp_tcp|wytunnel] [--transport-port=<port>] [--pool-size=<0..64>] [--pool-rotate-interval=<sec>] [--pool-rotate-drain=<sec>] [--keepalive=<sec>] [--fec=<K:M|off>] [--handshake=<none|tls_client_hello>] [--ebpf=on|off] --confirm";
+  assertStrictArgs(args, { positionals: 2, valueFlags: ["port", ...WYTUNNEL_VALUE_FLAGS], usage });
   const [rawNode, rawBridge] = positionals(args);
   const nodeId = requireUuid(rawNode, "node-id", usage);
   const bridgeId = requireUuid(rawBridge, "bridge-id", usage);
   const port = intFlag(args, "port");
+  const wt = parseWytunnelOptions(args, usage);
   if (!confirmed(args)) {
     return preview([
-      `Would reserve a bridge UDP port (${port !== undefined ? `requested ${port}` : "first free"}) on bridge ${bridgeId} for node ${nodeId}.`,
+      `Would reserve a bridge UDP port (${port !== undefined ? `requested ${port}` : "first free"}) on bridge ${bridgeId} for node ${nodeId}` +
+        (wt.transport ? ` using transport ${wt.transport}` : "") +
+        ".",
     ]);
   }
-  const body: Record<string, unknown> = { bridgeId };
+  const body: Record<string, unknown> = { bridgeId, ...wt };
   if (port !== undefined) body.publicUdpPort = port;
   const result = await api<{ created: boolean; route: NodeRouteView }>(
     `/api/admin/nodes/${nodeId}/vpn-bridge-routes`,
@@ -959,15 +1171,35 @@ export async function cmdBridgeRoutePrepare(api: BridgeApi, args: string[]): Pro
   console.log(`  id ${route.id}`);
   console.log(`  bridge ${show(route.bridgePublicIpv4)} (${show(route.bridgeName)})`);
   console.log(`  public udp port ${route.publicUdpPort}`);
-  console.log(`  proxy name ${show(route.frpProxyName)}`);
-  console.log(`  state ${route.state}`);
-  const setup = projectSetup(route.setupCommands);
-  if (setup) {
-    console.log("setup commands (run them on the node host yourself):");
-    for (const key of SETUP_KEYS) if (setup[key]) console.log(`  ${key}: ${setup[key]}`);
-    console.log("  The helper detects the local AWG port. If it asks, append --local-udp-port <udp> and/or --local-ip <ipv4> to install.");
-    console.log("  An existing node gets install-frpc.sh by re-running scripts/add-node.sh (it re-syncs infra/node).");
+  console.log(
+    `  transport ${route.transport ?? "frp_tcp"}${route.transportPort ? ` (port ${route.transportPort})` : ""}`,
+  );
+  if (route.transport !== "wytunnel") {
+    console.log(`  proxy name ${show(route.frpProxyName)}`);
   }
+  console.log(`  state ${route.state}`);
+  printRouteSetupCommands(route);
+}
+
+export async function cmdBridgeRouteTransport(api: BridgeApi, args: string[]): Promise<void> {
+  const usage =
+    "Usage: bridge-route-transport <route-id> [--transport=frp_tcp|wytunnel] [--transport-port=<port>] [--pool-size=<0..64>] [--pool-rotate-interval=<sec>] [--pool-rotate-drain=<sec>] [--keepalive=<sec>] [--fec=<K:M|off>] [--handshake=<none|tls_client_hello>] [--ebpf=on|off] --confirm";
+  assertStrictArgs(args, { positionals: 1, valueFlags: WYTUNNEL_VALUE_FLAGS, usage });
+  const routeId = requireUuid(positionals(args)[0], "route-id", usage);
+  const wt = parseWytunnelOptions(args, usage);
+  if (Object.keys(wt).length === 0) throw new Error(usage);
+  if (!confirmed(args)) {
+    return preview([
+      `Would update transport settings for route ${routeId}: ${JSON.stringify(wt)}.`,
+    ]);
+  }
+  const route = await api<NodeRouteView>(`/api/admin/vpn-bridge-routes/${routeId}/transport`, {
+    method: "PATCH",
+    body: JSON.stringify(wt),
+  });
+  if (args.includes("--json")) return json(projectRoute(route));
+  console.log(`route ${route.id} transport updated: ${describeRoute(route)}`);
+  printRouteSetupCommands(route);
 }
 
 /**
@@ -1204,6 +1436,7 @@ export const BRIDGE_COMMANDS: ReadonlyMap<
   ["bridge-delete", cmdBridgeDelete],
   ["bridge-routes", cmdBridgeRoutes],
   ["bridge-route-prepare", cmdBridgeRoutePrepare],
+  ["bridge-route-transport", cmdBridgeRouteTransport],
   ["bridge-route-activate", cmdBridgeRouteActivate],
   ["bridge-route-direct", cmdBridgeRouteDirect],
   ["bridge-route-release", cmdBridgeRouteRelease],
@@ -1215,11 +1448,13 @@ export const BRIDGE_USAGE_LINES = `  infrastructure [--json]                 Lis
   bridges [--json]                        List AWG 3.1 bridges: management state, ports
                                           held/total, route count
   bridge-add --name= --ipv4= [--control-port=7000] [--udp-start=41000]
-             [--udp-end=41031] --confirm  Register a bridge (metadata only; nothing is
+             [--udp-end=41031] [--default-transport=frp_tcp|wytunnel]
+             [--frps=on|off] --confirm    Register a bridge (metadata only; nothing is
                                           installed on the host)
   bridge-update <bridge-id> [--name=<name>] [--panel-dns=<host|none>]
-                [--reachability=on|off]   Rename a bridge, configure panelDnsHostname, or
-                                          toggle reachability alerts
+                [--reachability=on|off] [--default-transport=frp_tcp|wytunnel]
+                [--frps=on|off]           Rename a bridge, configure panelDnsHostname,
+                                          default transport, optional frps, or alerts
   bridge-enroll <bridge-id> --api-url=<url> --api-key-file=<path|-> --confirm
                                           Connect the bridge-agent: verifies its bridge id and
                                           status capability, stores the key encrypted. The key
@@ -1236,8 +1471,16 @@ export const BRIDGE_USAGE_LINES = `  infrastructure [--json]                 Lis
   bridge-delete <bridge-id> --confirm     Delete an empty bridge (BRIDGE_HAS_ROUTES otherwise)
   bridge-routes <node-id> [--json]        A node's endpoint: Direct or active route, revision,
                                           drafts, retiring ports, verification state
-  bridge-route-prepare <node-id> <bridge-id> [--port=<udp>] --confirm
+  bridge-route-prepare <node-id> <bridge-id> [--port=<udp>]
+                       [--transport=frp_tcp|wytunnel] [--pool-size=10]
+                       [--pool-rotate-interval=2700] [--fec=K:M|off] --confirm
                                           Reserve a bridge UDP port for a node
+  bridge-route-transport <route-id> [--transport=frp_tcp|wytunnel]
+                         [--transport-port=<port>] [--pool-size=<0..64>]
+                         [--pool-rotate-interval=<sec>] [--pool-rotate-drain=<sec>]
+                         [--keepalive=<sec>] [--fec=<K:M|off>]
+                         [--handshake=<none|tls_client_hello>] [--ebpf=on|off] --confirm
+                                          Switch route transport or tune WyTunnel pool/rotation
   bridge-route-activate <route-id> --confirm
                                           Switch the route's node onto it (needs a fresh
                                           observation and a verification < 30 min old)

@@ -276,8 +276,8 @@ describe("NodeCard embedded & NodeDetailDialog", () => {
       fileURLToPath(new URL("./node-detail-dialog.tsx", import.meta.url)),
       "utf8",
     );
-    expect(src).toContain(
-      "const hasSubDialog = editOpen || deleteOpen || updateAgentOpen || capacityOpen;",
+    expect(src).toMatch(
+      /const hasSubDialog =\s*editOpen \|\| deleteOpen \|\| updateAgentOpen \|\| capacityOpen \|\| Boolean\(notifyTarget\);/,
     );
     expect(src).toContain("if (!next && !hasSubDialog) onClose();");
     expect(src).toContain("onInteractOutside={(e) => {");

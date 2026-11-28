@@ -1,5 +1,10 @@
-import type { BridgeRouteVerification, NodeBridgeRoute } from "@amnezia/contracts";
+import {
+  normalizeWytunnelTransportConfig,
+  type BridgeRouteVerification,
+  type NodeBridgeRoute,
+} from "@amnezia/contracts";
 import { Badge } from "@/components/ui/badge";
+import { BridgeRouteTransportStrip } from "@/components/admin/bridge-transport-dialog";
 import { formatDateTime } from "@/lib/format";
 import type { Lang } from "@/lib/i18n/messages";
 import {
@@ -61,6 +66,13 @@ export function BridgeRouteFacts({
       <div className="flex flex-wrap items-center gap-2">
         <span className="font-medium">{route.bridgeName}</span>
         <Badge variant={STATE_VARIANT[route.state]}>{t(`bridge.state.${route.state}`)}</Badge>
+        <BridgeRouteTransportStrip
+          transport={route.transport}
+          transportPort={route.transportPort}
+          transportConfig={route.transportConfig}
+          telemetry={route.telemetry}
+          t={t}
+        />
       </div>
       <dl className="grid grid-cols-[auto_minmax(0,1fr)] gap-x-3 gap-y-1">
         <dt className="text-muted-foreground">{t("bridge.publicEntry")}</dt>
@@ -69,6 +81,56 @@ export function BridgeRouteFacts({
         </dd>
         <dt className="text-muted-foreground">{t("bridge.localTarget")}</dt>
         <dd className="break-all font-mono">{DEFAULT_LOCAL_TARGET}</dd>
+        {route.transport === "wytunnel" ? (
+          <>
+            <dt className="text-muted-foreground">{t("bridge.transport.label")}</dt>
+            <dd className="font-mono">
+              {(() => {
+                const cfg = normalizeWytunnelTransportConfig(route.transportConfig);
+                const rot =
+                  cfg.poolSize > 0 && cfg.poolRotateIntervalSec > 0
+                    ? ` · rot ${Math.round(cfg.poolRotateIntervalSec / 60)}m`
+                    : "";
+                const fec = cfg.fec ? ` · FEC ${cfg.fec.k}:${cfg.fec.m}` : "";
+                return `WyTunnel :${route.transportPort ?? "auto"} · ${
+                  cfg.poolSize > 0 ? `pool ${cfg.poolSize}` : "direct"
+                }${rot}${fec}`;
+              })()}
+            </dd>
+            {route.telemetry ? (
+              <>
+                <dt className="text-muted-foreground">{t("bridge.wytunnel.tunnels")}</dt>
+                <dd className="flex flex-wrap gap-x-3 gap-y-0.5 font-mono">
+                  {route.telemetry.targetStreams !== undefined ? (
+                    <span>
+                      {route.telemetry.healthyStreams ?? 0}/{route.telemetry.targetStreams}
+                    </span>
+                  ) : null}
+                  {route.telemetry.poolRttMs != null ? (
+                    <span>
+                      {t("bridge.wytunnel.rtt")}: {Math.round(route.telemetry.poolRttMs)} ms
+                    </span>
+                  ) : null}
+                  {route.telemetry.activeSessions !== undefined ? (
+                    <span>
+                      {t("bridge.wytunnel.sessions")}: {route.telemetry.activeSessions}
+                    </span>
+                  ) : null}
+                  {route.telemetry.rotationsTotal !== undefined ? (
+                    <span>
+                      {t("bridge.wytunnel.rotations")}: {route.telemetry.rotationsTotal}
+                    </span>
+                  ) : null}
+                  {route.telemetry.failoversTotal !== undefined ? (
+                    <span>
+                      {t("bridge.wytunnel.failovers")}: {route.telemetry.failoversTotal}
+                    </span>
+                  ) : null}
+                </dd>
+              </>
+            ) : null}
+          </>
+        ) : null}
         <dt className="text-muted-foreground">{t("bridge.registration")}</dt>
         <dd className="flex flex-wrap items-center gap-1.5">
           <Badge variant={registrationTone(observation.status)}>

@@ -5,6 +5,7 @@ import {
   AlertTriangle,
   ArrowLeftRight,
   ArrowRight,
+  BellRing,
   CheckCircle2,
   GitBranch,
   Pencil,
@@ -18,10 +19,15 @@ import {
   type NodeEgressIp,
   type NodeEgressMode,
   type NodePublicEndpointMutation,
+  type ProtocolKind,
   type VerifyNodeEgressIpResult,
 } from "@amnezia/contracts";
 import type { AdminNode } from "@/components/admin/admin-data";
 import { metricBytes } from "@/components/admin/node-metrics";
+import {
+  NotifyKeyUpdateDialog,
+  type NotifyKeyUpdateTarget,
+} from "@/components/admin/notify-key-update-dialog";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { Checkbox } from "@/components/ui/checkbox";
@@ -46,8 +52,12 @@ import {
 import { Switch } from "@/components/ui/switch";
 import {
   adoptNodeEgressMode,
+  clearNodeEgressIpKeyUpdate,
+  clearNodeEndpointKeyUpdate,
   createNodeEgressIp,
   deleteNodeEgressIp,
+  notifyNodeEgressIpKeyUpdate,
+  notifyNodeEndpointKeyUpdate,
   setNodeEgressMode,
   swapNodeEgressIp,
   updateNodeEgressIp,
@@ -308,6 +318,8 @@ export function NodeTopologyDialogBody({
   const [editVarCustomName, setEditVarCustomName] = React.useState("");
   const [editVarExitId, setEditVarExitId] = React.useState<string>(DEFAULT_EXIT_SENTINEL);
   const [editVarRenameGroup, setEditVarRenameGroup] = React.useState(false);
+  const [editVarProtocols, setEditVarProtocols] = React.useState<ProtocolKind[] | null>(null);
+  const [notifyTarget, setNotifyTarget] = React.useState<NotifyKeyUpdateTarget | null>(null);
 
   React.useEffect(() => {
     setBlockSmtp(node.egressBlockSmtp ?? true);
@@ -781,9 +793,33 @@ export function NodeTopologyDialogBody({
                           {exit.allowAsEntry ? (
                             <Badge variant="outline">{t("egress.allowAsEntry")}</Badge>
                           ) : null}
+                          {exit.keyUpdateNotifiedAt ? (
+                            <Badge variant="warning">{t("notifyKeyUpdate.activeBadge")}</Badge>
+                          ) : null}
                         </div>
 
                         <div className="flex flex-wrap items-center gap-1">
+                          <Button
+                            type="button"
+                            size="sm"
+                            variant="ghost"
+                            className="h-7 px-2 text-xs"
+                            disabled={busy !== null}
+                            title={t("notifyKeyUpdate.button")}
+                            onClick={() =>
+                              setNotifyTarget({
+                                title: exit.label ? `${exit.label} (${exit.ipv4})` : exit.ipv4,
+                                notifiedAt: exit.keyUpdateNotifiedAt ?? null,
+                                note: exit.keyUpdateNotifyNote ?? null,
+                                onNotify: (note) =>
+                                  notifyNodeEgressIpKeyUpdate(request, node.id, exit.id, note),
+                                onClear: () =>
+                                  clearNodeEgressIpKeyUpdate(request, node.id, exit.id),
+                              })
+                            }
+                          >
+                            <BellRing className="size-3.5" />
+                          </Button>
                           {!isDefault && exit.enabled ? (
                             <Button
                               type="button"
@@ -1453,6 +1489,14 @@ export function NodeTopologyDialogBody({
                         {ep.bridgeMode && ep.bridgeMode !== "inherit" ? (
                           <Badge variant="outline">{ep.bridgeMode}</Badge>
                         ) : null}
+                        {ep.enabledProtocols && ep.enabledProtocols.length > 0 ? (
+                          <Badge variant="secondary" className="font-mono text-[10px]">
+                            {ep.enabledProtocols.join(", ")}
+                          </Badge>
+                        ) : null}
+                        {ep.keyUpdateNotifiedAt ? (
+                          <Badge variant="warning">{t("notifyKeyUpdate.activeBadge")}</Badge>
+                        ) : null}
                       </div>
                       <div className="flex min-w-0 max-w-full flex-wrap items-center gap-1.5">
                         <div className="flex min-w-0 max-w-full flex-wrap items-center gap-1">
@@ -1502,11 +1546,33 @@ export function NodeTopologyDialogBody({
                           variant="ghost"
                           className="h-7 px-2 text-xs"
                           disabled={busy !== null}
+                          title={t("notifyKeyUpdate.button")}
+                          onClick={() =>
+                            setNotifyTarget({
+                              title: ep.name,
+                              notifiedAt: ep.keyUpdateNotifiedAt ?? null,
+                              note: ep.keyUpdateNotifyNote ?? null,
+                              onNotify: (note) =>
+                                notifyNodeEndpointKeyUpdate(request, node.id, ep.id, note),
+                              onClear: () =>
+                                clearNodeEndpointKeyUpdate(request, node.id, ep.id),
+                            })
+                          }
+                        >
+                          <BellRing className="size-3.5" />
+                        </Button>
+                        <Button
+                          type="button"
+                          size="sm"
+                          variant="ghost"
+                          className="h-7 px-2 text-xs"
+                          disabled={busy !== null}
                           onClick={() => {
                             setEditVarId(ep.id);
                             setEditVarEntryName(ep.entryName ?? ep.name);
                             setEditVarCustomName(ep.customName ?? "");
                             setEditVarExitId(ep.egressIpId ?? DEFAULT_EXIT_SENTINEL);
+                            setEditVarProtocols(ep.enabledProtocols ?? null);
                             setEditVarRenameGroup(false);
                           }}
                         >
@@ -1548,6 +1614,7 @@ export function NodeTopologyDialogBody({
                                 editVarExitId === DEFAULT_EXIT_SENTINEL
                                   ? null
                                   : editVarExitId,
+                              enabledProtocols: editVarProtocols,
                             });
                             setEditVarId(null);
                           });
@@ -1587,6 +1654,39 @@ export function NodeTopologyDialogBody({
                               ))}
                             </SelectContent>
                           </Select>
+                        </div>
+                        <div className="flex flex-wrap items-center gap-3 pt-1">
+                          <span className="text-[11px] font-medium text-muted-foreground">
+                            {t("egress.variantProtocols")}:
+                          </span>
+                          <label className="flex items-center gap-1.5">
+                            <Checkbox
+                              checked={editVarProtocols === null}
+                              onChange={(e) =>
+                                setEditVarProtocols(e.target.checked ? null : ["awg3"])
+                              }
+                            />
+                            <span>{t("egress.variantProtocolsInherit")}</span>
+                          </label>
+                          {editVarProtocols !== null ? (
+                            (["awg3", "awg2"] as const).map((proto) => {
+                              const checked = editVarProtocols.includes(proto);
+                              return (
+                                <label key={proto} className="flex items-center gap-1.5">
+                                  <Checkbox
+                                    checked={checked}
+                                    onChange={(e) => {
+                                      const next = e.target.checked
+                                        ? [...editVarProtocols, proto]
+                                        : editVarProtocols.filter((p) => p !== proto);
+                                      if (next.length > 0) setEditVarProtocols(next);
+                                    }}
+                                  />
+                                  <span className="font-mono uppercase">{proto}</span>
+                                </label>
+                              );
+                            })
+                          ) : null}
                         </div>
                         <div className="flex flex-wrap items-center justify-between gap-2">
                           <label className="flex items-center gap-2">
@@ -1708,6 +1808,11 @@ export function NodeTopologyDialogBody({
               </Button>
             </form>
           </section>
+          <NotifyKeyUpdateDialog
+            target={notifyTarget}
+            onClose={() => setNotifyTarget(null)}
+            onDone={reload}
+          />
         </div>
   );
 }

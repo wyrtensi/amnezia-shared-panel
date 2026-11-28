@@ -4,6 +4,8 @@ export const BRIDGE_API_VERSION = 1;
 export const STATUS_CAPABILITY = "status.v1";
 /** Reported only when updates are configured (`BRIDGE_AGENT_IMAGE_REPOSITORY` and a usable spool). */
 export const UPDATE_CAPABILITY = "update.v1";
+/** Reported when local WyTunnel socket observation is wired. */
+export const WYTUNNEL_CAPABILITY = "wytunnel.v1";
 
 /** Fixed enum: the panel keys behavior off these, never off the message text. */
 export const ERROR_CODES = [
@@ -59,17 +61,45 @@ export type FrpsTlsStatus =
   | { state: "failed"; reason: FrpsTlsFailure }
   | { state: "verified"; expiresAt: string; expiresSoon: boolean; fingerprintSha256: string; matchesDeployed: boolean | null };
 
+export type WytunnelTelemetry = {
+  version?: string;
+  mode?: "direct" | "pool";
+  ebpfMode?: "nic" | "userspace_fallback";
+  uptimeSec?: number;
+  activeSessions?: number;
+  healthyStreams?: number;
+  targetStreams?: number;
+  drainingStreams?: number;
+  poolRttMs?: number | null;
+  rxPackets?: number;
+  txPackets?: number;
+  fecRecovered?: number;
+  fecLostGroups?: number;
+  keepaliveResets?: number;
+  failoversTotal?: number;
+  rotationsTotal?: number;
+};
+
+export type WytunnelInstanceStatus = {
+  routeId: string;
+  remotePort: number | null;
+  online: boolean;
+  registrationMarker: string | null;
+  telemetry?: WytunnelTelemetry;
+};
+
 export type StatusResponse = {
   bridgeId: string;
   agentVersion: string;
   apiVersion: number;
   observedAt: string;
-  frps: { reachable: boolean; version: string | null };
+  frps: { enabled?: boolean; reachable: boolean; version: string | null };
   frpsTls?: FrpsTlsStatus;
   trafficToday?: { inBytes: number; outBytes: number };
   hostMetrics?: HostMetrics;
   applied: AppliedPorts;
   proxies: ProxyStatus[];
+  wytunnel?: WytunnelInstanceStatus[];
   errors: StatusError[];
 };
 

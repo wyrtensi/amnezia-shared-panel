@@ -70,4 +70,46 @@ describe("bridge setup commands", () => {
     });
     expect(commands.install).toContain("--bridge-ip '1.2.3.4; curl evil'");
   });
+
+  it("builds WyTunnel node, bridge, and disable-FRP commands with pool and rotation flags", () => {
+    const commands = routeSetupCommands({
+      id: ROUTE_ID,
+      bridgeId: BRIDGE_ID,
+      publicUdpPort: 41005,
+      udpPortStart: 41000,
+      bridgePublicIpv4: "198.51.100.7",
+      bridgeControlTcpPort: 7000,
+      nodePublicIp: "203.0.113.10",
+      transport: "wytunnel",
+      transportPort: 14105,
+      transportConfig: {
+        poolSize: 10,
+        poolRotateIntervalSec: 2700,
+        poolRotateDrainSec: 5,
+        keepaliveSec: 25,
+        fec: { k: 20, m: 1 },
+        handshakeMode: "tls_client_hello",
+        ebpfEnabled: false,
+      },
+      bridgeFrpsEnabled: false,
+    });
+    expect(commands.install).toContain("/opt/amnezia-panel-node/scripts/install-wytunnel-node.sh");
+    expect(commands.install).toContain("--transport-port 14105");
+    expect(commands.install).toContain("--slot 5");
+    expect(commands.install).toContain("--fec 20:1");
+    expect(commands.install).toContain("--handshake-mode tls_client_hello");
+    expect(commands.install).toContain("--pool-mode");
+    expect(commands.install).toContain("--no-ebpf");
+    expect(commands.bridgeInstall).toContain("/opt/amnezia-bridge/install-wytunnel-bridge.sh");
+    expect(commands.bridgeInstall).toContain("--node-ip 203.0.113.10");
+    expect(commands.bridgeInstall).toContain("--pool-size 10");
+    expect(commands.bridgeInstall).toContain("--pool-rotate-interval 2700");
+    expect(commands.bridgeInstall).toContain("--disable-frps");
+    expect(commands.disableFrpc).toBe(
+      `sudo systemctl disable --now amnezia-frpc@${ROUTE_ID}.service`,
+    );
+    expect(commands.disableFrps).toBe(
+      "sudo bash /opt/amnezia-bridge/toggle-frps.sh --disable",
+    );
+  });
 });

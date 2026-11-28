@@ -1,4 +1,11 @@
-import type { BridgeSetupCommands, RouteSetupCommands } from "@amnezia/contracts";
+import {
+  deriveWytunnelTransportPort,
+  normalizeWytunnelTransportConfig,
+  type BridgeRouteTransport,
+  type BridgeSetupCommands,
+  type RouteSetupCommands,
+  type WytunnelTransportConfig,
+} from "@amnezia/contracts";
 
 /**
  * Host setup commands the operator runs on a bridge or node host. They are
@@ -23,10 +30,18 @@ export const shellQuote = (value: string | number): string => {
 // bridge has no deployer, so infra/bridge/ is copied to /opt/amnezia-bridge/ by
 // hand (see infra/bridge/README.md).
 const BRIDGE_SCRIPT = "/opt/amnezia-bridge/install-bridge.sh";
+const BRIDGE_WYTUNNEL_SCRIPT = "/opt/amnezia-bridge/install-wytunnel-bridge.sh";
+const BRIDGE_TOGGLE_FRPS_SCRIPT = "/opt/amnezia-bridge/toggle-frps.sh";
 const FRPC_SCRIPT = "/opt/amnezia-panel-node/scripts/install-frpc.sh";
+const NODE_WYTUNNEL_SCRIPT = "/opt/amnezia-panel-node/scripts/install-wytunnel-node.sh";
 
-const command = (script: string, args: ReadonlyArray<[string, string | number]>, extra: string[] = []) =>
-  ["sudo", "sh", script, ...args.flatMap(([flag, value]) => [flag, shellQuote(value)]), ...extra].join(" ");
+const command = (
+  script: string,
+  args: ReadonlyArray<[string, string | number]>,
+  extra: string[] = [],
+  shell: "sh" | "bash" = "sh",
+) =>
+  ["sudo", shell, script, ...args.flatMap(([flag, value]) => [flag, shellQuote(value)]), ...extra].join(" ");
 
 export type BridgeSetupInput = {
   id: string;
@@ -72,9 +87,74 @@ export type RouteSetupInput = {
   publicUdpPort: number;
   bridgePublicIpv4: string;
   bridgeControlTcpPort: number;
+  udpPortStart?: number;
+  nodePublicIp?: string | null;
+  transport?: BridgeRouteTransport;
+  transportPort?: number | null;
+  transportConfig?: Partial<WytunnelTransportConfig> | null;
+  bridgeFrpsEnabled?: boolean;
 };
 
 export const routeSetupCommands = (route: RouteSetupInput): RouteSetupCommands => {
+  if (route.transport === "wytunnel") {
+    const cfg = normalizeWytunnelTransportConfig(route.transportConfig);
+    const transportPort =
+      route.transportPort ??
+      deriveWytunnelTransportPort(route.publicUdpPort, route.udpPortStart);
+    const slot = Math.max(0, route.publicUdpPort - (route.udpPortStart ?? 41000));
+    const fecValue = cfg.fec ? `${cfg.fec.k}:${cfg.fec.m}` : null;
+    const nodeTargetIp = route.nodePublicIp?.trim() || "<NODE_PUBLIC_IP>";
+
+    const nodeArgs: Array<[string, string | number]> = [
+      ["--route-id", route.id],
+      ["--bridge-ip", route.bridgePublicIpv4],
+      ["--transport-port", transportPort],
+      ["--slot", slot],
+      ["--keepalive", cfg.keepaliveSec],
+      ["--handshake-mode", cfg.handshakeMode],
+    ];
+    if (fecValue) nodeArgs.push(["--fec", fecValue]);
+    const nodeFlags: string[] = [
+      cfg.poolSize > 0 ? "--pool-mode" : "--direct-mode",
+      ...(!cfg.ebpfEnabled ? ["--no-ebpf"] : []),
+    ];
+
+    const bridgeArgs: Array<[string, string | number]> = [
+      ["--route-id", route.id],
+      ["--bridge-id", route.bridgeId],
+      ["--public-port", route.publicUdpPort],
+      ["--node-ip", nodeTargetIp],
+      ["--transport-port", transportPort],
+      ["--slot", slot],
+      ["--pool-size", cfg.poolSize],
+      ["--pool-rotate-interval", cfg.poolRotateIntervalSec],
+      ["--pool-rotate-drain", cfg.poolRotateDrainSec],
+      ["--keepalive", cfg.keepaliveSec],
+      ["--handshake-mode", cfg.handshakeMode],
+    ];
+    if (fecValue) bridgeArgs.push(["--fec", fecValue]);
+    const bridgeFlags: string[] = [
+      ...(!cfg.ebpfEnabled ? ["--no-ebpf"] : []),
+      ...(route.bridgeFrpsEnabled === false ? ["--disable-frps"] : []),
+    ];
+
+    return {
+      install: command(NODE_WYTUNNEL_SCRIPT, nodeArgs, nodeFlags, "bash"),
+      dryRun: command(NODE_WYTUNNEL_SCRIPT, nodeArgs, [...nodeFlags, "--dry-run"], "bash"),
+      remove: command(NODE_WYTUNNEL_SCRIPT, [["--route-id", route.id]], ["--remove"], "bash"),
+      bridgeInstall: command(BRIDGE_WYTUNNEL_SCRIPT, bridgeArgs, bridgeFlags, "bash"),
+      bridgeDryRun: command(
+        BRIDGE_WYTUNNEL_SCRIPT,
+        bridgeArgs,
+        [...bridgeFlags, "--dry-run"],
+        "bash",
+      ),
+      bridgeRemove: command(BRIDGE_WYTUNNEL_SCRIPT, [["--route-id", route.id]], ["--remove"], "bash"),
+      disableFrpc: `sudo systemctl disable --now ${shellQuote(`amnezia-frpc@${route.id}.service`)}`,
+      disableFrps: command(BRIDGE_TOGGLE_FRPS_SCRIPT, [], ["--disable"], "bash"),
+    };
+  }
+
   const bridgeArgs: Array<[string, string | number]> = [
     ["--bridge-id", route.bridgeId],
     ["--bridge-ip", route.bridgePublicIpv4],

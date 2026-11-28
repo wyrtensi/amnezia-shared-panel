@@ -13,11 +13,13 @@ import type {
   RequestBridgeAgentUpdateResult,
   InfrastructureItem,
   BridgeEligibility,
+  NodeBridgeRoute,
   NodeBridgeRoutes,
   PrepareBridgeRouteRequest,
   PrepareBridgeRouteResult,
   ReleaseBridgeRouteResult,
   UpdateBridgeRequest,
+  UpdateBridgeRouteTransportRequest,
   VerifyBridgeRouteRequest,
   VerifyBridgeRouteResult,
   AdminReassignKeyEndpointRequest,
@@ -36,6 +38,8 @@ import type {
   NodeEgressMode,
   NodeEgressModeState,
   NodeIpv6RejectStubState,
+  NotifyKeyUpdateRequest,
+  NotifyKeyUpdateResult,
   NoticeAcks,
   NoticeKind,
   PortalPolicy,
@@ -192,7 +196,12 @@ export interface ControlRepository {
     keyId: string,
     format: string,
     hash: string,
-    context: { key: StoredKeyConfig; globalRoutes: GlobalRoutes | null; markRuleVersion: boolean },
+    context: {
+      key: StoredKeyConfig;
+      globalRoutes: GlobalRoutes | null;
+      markRuleVersion: boolean;
+      markConfigDelivered?: boolean;
+    },
   ) => Promise<boolean>;
   listRouteProfiles: () => Promise<RouteProfileAvailability[]>;
   getRuleVersion: (id: string) => Promise<unknown>;
@@ -334,6 +343,11 @@ export interface ControlRepository {
     actor: Actor,
     routeId: string,
   ) => Promise<ReleaseBridgeRouteResult>;
+  updateBridgeRouteTransport: (
+    actor: Actor,
+    routeId: string,
+    request: UpdateBridgeRouteTransportRequest,
+  ) => Promise<NodeBridgeRoute>;
   listInfrastructure: (actor: Actor) => Promise<InfrastructureItem[]>;
   /** A held route with its bridge's public address; null when unknown. */
   findBridgeRouteTarget: (routeId: string) => Promise<BridgeRouteTarget | null>;
@@ -384,4 +398,35 @@ export interface ControlRepository {
     keyId: string,
     request: AdminReassignKeyEndpointRequest,
   ) => Promise<{ id: string; nodeId: string; endpointId: string; previousEndpointId: string | null }>;
+  notifyNodeKeyUpdate: (
+    actor: Actor,
+    nodeId: string,
+    request: NotifyKeyUpdateRequest,
+  ) => Promise<NotifyKeyUpdateResult>;
+  clearNodeKeyUpdate: (
+    actor: Actor,
+    nodeId: string,
+  ) => Promise<NotifyKeyUpdateResult>;
+  notifyNodeEgressIpKeyUpdate: (
+    actor: Actor,
+    nodeId: string,
+    ipId: string,
+    request: NotifyKeyUpdateRequest,
+  ) => Promise<NotifyKeyUpdateResult>;
+  clearNodeEgressIpKeyUpdate: (
+    actor: Actor,
+    nodeId: string,
+    ipId: string,
+  ) => Promise<NotifyKeyUpdateResult>;
+  notifyNodeEndpointKeyUpdate: (
+    actor: Actor,
+    nodeId: string,
+    endpointId: string,
+    request: NotifyKeyUpdateRequest,
+  ) => Promise<NotifyKeyUpdateResult>;
+  clearNodeEndpointKeyUpdate: (
+    actor: Actor,
+    nodeId: string,
+    endpointId: string,
+  ) => Promise<NotifyKeyUpdateResult>;
 }

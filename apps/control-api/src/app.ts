@@ -26,6 +26,7 @@ import {
   upsertReachabilityProbeRequestSchema,
   createBridgeRequestSchema,
   updateBridgeRequestSchema,
+  updateBridgeRouteTransportRequestSchema,
   prepareBridgeRouteRequestSchema,
   BRIDGE_REGISTRATION_MARKER_HEADER,
   bridgeTestConfigQuerySchema,
@@ -34,6 +35,7 @@ import {
   verifyBridgeRouteRequestSchema,
   adminReassignKeyEndpointRequestSchema,
   createNodeEgressIpRequestSchema,
+  notifyKeyUpdateRequestSchema,
   swapNodeEgressIpRequestSchema,
   updateNodeEgressIpRequestSchema,
   updateNodeEgressModeRequestSchema,
@@ -611,6 +613,45 @@ export const buildApp = async ({
     const { id } = idParamsSchema.parse(request.params);
     return service.adoptNodeEgressMode(adminFor(request), id);
   });
+  const endpointParamsSchema = z.object({ id: z.uuid(), endpointId: z.uuid() });
+  app.post("/api/admin/nodes/:id/notify-key-update", async (request) => {
+    const { id } = idParamsSchema.parse(request.params);
+    return service.notifyNodeKeyUpdate(
+      adminFor(request),
+      id,
+      notifyKeyUpdateRequestSchema.parse(request.body ?? {}),
+    );
+  });
+  app.delete("/api/admin/nodes/:id/notify-key-update", async (request) => {
+    const { id } = idParamsSchema.parse(request.params);
+    return service.clearNodeKeyUpdate(adminFor(request), id);
+  });
+  app.post("/api/admin/nodes/:id/egress-ips/:ipId/notify-key-update", async (request) => {
+    const { id, ipId } = egressIpParamsSchema.parse(request.params);
+    return service.notifyNodeEgressIpKeyUpdate(
+      adminFor(request),
+      id,
+      ipId,
+      notifyKeyUpdateRequestSchema.parse(request.body ?? {}),
+    );
+  });
+  app.delete("/api/admin/nodes/:id/egress-ips/:ipId/notify-key-update", async (request) => {
+    const { id, ipId } = egressIpParamsSchema.parse(request.params);
+    return service.clearNodeEgressIpKeyUpdate(adminFor(request), id, ipId);
+  });
+  app.post("/api/admin/nodes/:id/public-endpoints/:endpointId/notify-key-update", async (request) => {
+    const { id, endpointId } = endpointParamsSchema.parse(request.params);
+    return service.notifyNodeEndpointKeyUpdate(
+      adminFor(request),
+      id,
+      endpointId,
+      notifyKeyUpdateRequestSchema.parse(request.body ?? {}),
+    );
+  });
+  app.delete("/api/admin/nodes/:id/public-endpoints/:endpointId/notify-key-update", async (request) => {
+    const { id, endpointId } = endpointParamsSchema.parse(request.params);
+    return service.clearNodeEndpointKeyUpdate(adminFor(request), id, endpointId);
+  });
   app.patch("/api/admin/keys/:id/endpoint", async (request) => {
     const { id } = idParamsSchema.parse(request.params);
     return service.reassignKeyEndpoint(
@@ -735,6 +776,15 @@ export const buildApp = async ({
       );
     }
     return service.releaseBridgeRoute(admin, id);
+  });
+  app.patch("/api/admin/vpn-bridge-routes/:id/transport", async (request) => {
+    const admin = adminFor(request);
+    const { id } = idParamsSchema.parse(request.params);
+    return service.updateBridgeRouteTransport(
+      admin,
+      id,
+      updateBridgeRouteTransportRequestSchema.parse(request.body),
+    );
   });
   // Candidate validation. Static last segments, so neither reaches the
   // generic `:resource/:id/:action` handler below.

@@ -83,9 +83,12 @@ export type BridgeGraphNode = {
   name: string;
   publicIpv4: string;
   controlTcpPort: number;
+  defaultTransport?: Bridge["defaultTransport"];
+  frpsEnabled?: boolean;
   managementStatus: Bridge["managementStatus"];
   frpsReachable: boolean | null;
   activeRouteCount: number;
+  onlinePeerCount: number;
   health: TopologyHealth;
 };
 
@@ -107,6 +110,7 @@ export type VpnNodeGraphNode = {
   lastError: string | null;
   peerCount: number;
   maxPeers: number;
+  onlinePeerCount: number;
   route: NodeRouteLabel | null;
   health: TopologyHealth;
 };
@@ -133,6 +137,7 @@ export type EntryGraphNode = {
   probeEgressMatch: boolean | null;
   effectiveEgressIp: string | null;
   egressIpId: string | null;
+  onlinePeerCount: number;
   isSynthetic: boolean;
   health: TopologyHealth;
 };
@@ -155,6 +160,7 @@ export type ExitGraphNode = {
   hostState: NodeEgressIpHostState | null;
   failingChecks: TopologyCheckFailure[];
   incomingVariantCount: number;
+  onlinePeerCount: number;
   isSynthetic: boolean;
   health: TopologyHealth;
 };
@@ -272,10 +278,11 @@ const resolveBridgeHealth = (
   reachBridge: NonNullable<AdminReachabilityView["bridges"]>[number] | undefined,
   frpsReachable: boolean | null,
 ): TopologyHealth => {
+  const frpsExpected = bridge.frpsEnabled !== false;
   if (
     bridge.managementStatus === "down" ||
     bridge.managementStatus === "identity_mismatch" ||
-    frpsReachable === false ||
+    (frpsExpected && frpsReachable === false) ||
     bridge.alertState?.incidentOpen ||
     reachBridge?.mgmtIncidentOpen ||
     reachBridge?.probeIncidentOpen ||
@@ -482,9 +489,12 @@ export function buildFleetTopologyGraph({
         name: bridge.name,
         publicIpv4: bridge.publicIpv4,
         controlTcpPort: bridge.controlTcpPort,
+        defaultTransport: bridge.defaultTransport,
+        frpsEnabled: bridge.frpsEnabled,
         managementStatus: bridge.managementStatus,
         frpsReachable,
         activeRouteCount,
+        onlinePeerCount: bridge.onlinePeerCount ?? 0,
         health: resolveBridgeHealth(bridge, reachBridge, frpsReachable),
       };
     });
@@ -575,6 +585,7 @@ export function buildFleetTopologyGraph({
       lastError: node.lastError,
       peerCount: node.peerCount ?? 0,
       maxPeers: node.maxPeers,
+      onlinePeerCount: node.onlinePeerCount ?? 0,
       route,
       health: nodeHealth,
     });
@@ -668,6 +679,7 @@ export function buildFleetTopologyGraph({
         hostState: exitIp.hostState,
         failingChecks: dedupedChecks,
         incomingVariantCount: 0,
+        onlinePeerCount: exitIp.onlinePeerCount ?? 0,
         isSynthetic: false,
         health: resolveExitHealth(
           node.enabled,
@@ -719,6 +731,7 @@ export function buildFleetTopologyGraph({
         hostState: implicitHostState,
         failingChecks: dedupedChecks,
         incomingVariantCount: 0,
+        onlinePeerCount: nodeEgressIps.length === 0 ? (node.onlinePeerCount ?? 0) : 0,
         isSynthetic: true,
         health: resolveExitHealth(
           node.enabled,
@@ -777,6 +790,7 @@ export function buildFleetTopologyGraph({
           probeEgressMatch: ep.probeEgressMatch ?? null,
           effectiveEgressIp: ep.effectiveEgressIp ?? null,
           egressIpId: ep.egressIpId ?? null,
+          onlinePeerCount: ep.onlinePeerCount ?? 0,
           isSynthetic: false,
           health: entryHealth,
         });
@@ -866,6 +880,7 @@ export function buildFleetTopologyGraph({
         probeEgressMatch: null,
         effectiveEgressIp: null,
         egressIpId: null,
+        onlinePeerCount: node.onlinePeerCount ?? 0,
         isSynthetic: true,
         health: node.enabled
           ? reachNode?.incidentOpen || reachNode?.status === "failed"
@@ -1112,6 +1127,28 @@ const COLUMN_TITLE_KEY: Record<TopologyColumnId, string> = {
   exits: "ov.map.colExits",
 };
 
+function OnlineCountPill({
+  count,
+  t,
+}: {
+  count: number;
+  t: ReturnType<typeof useT>["t"];
+}) {
+  return (
+    <span
+      title={t("ov.map.onlineTitle")}
+      className={cn(
+        "shrink-0 rounded-full px-1.5 py-0.5 font-mono text-[10px] font-medium leading-none tabular",
+        count > 0
+          ? "bg-success/15 text-success"
+          : "bg-muted text-muted-foreground",
+      )}
+    >
+      {t("ov.map.onlineCount", { count })}
+    </span>
+  );
+}
+
 function HealthDot({ health }: { health: TopologyHealth }) {
   return (
     <span
@@ -1352,11 +1389,13 @@ export function FleetTopologyMap({
                           const isDimmed =
                             hasHighlight && !activeNodeIds.has(b.id);
                           const frpsLabel =
-                            b.frpsReachable === null
-                              ? "frps ?"
-                              : b.frpsReachable
-                                ? "frps ok"
-                                : "frps down";
+                            b.frpsEnabled === false
+                              ? "WyTunnel"
+                              : b.frpsReachable === null
+                                ? "frps ?"
+                                : b.frpsReachable
+                                  ? "frps ok"
+                                  : "frps down";
                           return (
                             <button
                               key={b.id}
@@ -1385,7 +1424,10 @@ export function FleetTopologyMap({
                                   <Cable className="size-3.5 shrink-0 text-chart-1" />
                                   <span className="truncate">{b.name}</span>
                                 </span>
-                                <HealthDot health={b.health} />
+                                <div className="flex shrink-0 items-center gap-1">
+                                  <OnlineCountPill count={b.onlinePeerCount} t={t} />
+                                  <HealthDot health={b.health} />
+                                </div>
                               </div>
                               <div className="truncate font-mono text-[11px] text-muted-foreground">
                                 {b.publicIpv4}
@@ -1394,14 +1436,18 @@ export function FleetTopologyMap({
                                 <span
                                   className={cn(
                                     "shrink-0 font-mono",
-                                    b.frpsReachable === false
-                                      ? "text-destructive"
-                                      : b.frpsReachable
-                                        ? "text-success"
-                                        : "text-muted-foreground",
+                                    b.frpsEnabled === false
+                                      ? "text-primary"
+                                      : b.frpsReachable === false
+                                        ? "text-destructive"
+                                        : b.frpsReachable
+                                          ? "text-success"
+                                          : "text-muted-foreground",
                                   )}
                                 >
-                                  {frpsLabel} · :{b.controlTcpPort}
+                                  {b.frpsEnabled === false
+                                    ? frpsLabel
+                                    : `${frpsLabel} · :${b.controlTcpPort}`}
                                 </span>
                                 <span
                                   title={t(`bridge.status.${b.managementStatus}`)}
@@ -1466,6 +1512,7 @@ export function FleetTopologyMap({
                                 <span className="truncate">{n.name}</span>
                               </span>
                               <div className="flex shrink-0 items-center gap-1">
+                                <OnlineCountPill count={n.onlinePeerCount} t={t} />
                                 {n.modeDrift ? (
                                   <AlertTriangle className="size-3 text-destructive" />
                                 ) : null}
@@ -1556,7 +1603,10 @@ export function FleetTopologyMap({
                                   </Badge>
                                 ) : null}
                               </span>
-                              <HealthDot health={e.health} />
+                              <div className="flex shrink-0 items-center gap-1">
+                                <OnlineCountPill count={e.onlinePeerCount} t={t} />
+                                <HealthDot health={e.health} />
+                              </div>
                             </div>
                             <div className="truncate font-mono text-[11px] text-muted-foreground">
                               {e.publicAddress}
@@ -1639,6 +1689,7 @@ export function FleetTopologyMap({
                                 <span className="truncate">{ex.ipv4}</span>
                               </span>
                               <div className="flex shrink-0 items-center gap-1">
+                                <OnlineCountPill count={ex.onlinePeerCount} t={t} />
                                 {ex.incomingVariantCount > 1 ? (
                                   <span
                                     title={t("ov.map.sharedExitTitle", {
@@ -1713,13 +1764,15 @@ function describeSelectedItem(
 ): { summary: string; href: string; linkLabel: string } {
   if (item.kind === "bridge") {
     const frpsText =
-      item.frpsReachable === null
-        ? "frps ?"
-        : item.frpsReachable
-          ? "frps ok"
-          : "frps down";
+      item.frpsEnabled === false
+        ? "WyTunnel"
+        : item.frpsReachable === null
+          ? "frps ?"
+          : item.frpsReachable
+            ? "frps ok"
+            : "frps down";
     return {
-      summary: `${item.name} · ${item.publicIpv4} · ${frpsText} :${item.controlTcpPort} · ${t(`bridge.status.${item.managementStatus}`)}`,
+      summary: `${item.name} · ${item.publicIpv4} · ${t("ov.map.onlineCount", { count: item.onlinePeerCount })} · ${frpsText} · ${t(`bridge.status.${item.managementStatus}`)}`,
       href: bridgeSectionHref,
       linkLabel: t("ov.map.openBridges"),
     };
@@ -1732,7 +1785,7 @@ function describeSelectedItem(
       ? t(`egress.daemon.${item.egressDaemonState}`)
       : "—";
     return {
-      summary: `${item.name} · ${t(`egress.mode.${item.egressMode}`)} · egressd: ${egressPart} · ${item.peerCount}/${item.maxPeers} · ${routePart}`,
+      summary: `${item.name} · ${t("ov.map.onlineCount", { count: item.onlinePeerCount })} · ${t(`egress.mode.${item.egressMode}`)} · egressd: ${egressPart} · ${item.peerCount}/${item.maxPeers} · ${routePart}`,
       href: `${NODES_PATH}#${nodeCardAnchor(item.nodeId)}`,
       linkLabel: t("ov.map.openNode"),
     };
@@ -1747,7 +1800,7 @@ function describeSelectedItem(
       ? ` -> ${item.effectiveEgressIp}`
       : "";
     return {
-      summary: `${item.nodeName} · ${item.name} (${item.publicAddress}${exitPart}) · ${probePart}`,
+      summary: `${item.nodeName} · ${item.name} (${item.publicAddress}${exitPart}) · ${t("ov.map.onlineCount", { count: item.onlinePeerCount })} · ${probePart}`,
       href: `${NODES_PATH}#${nodeCardAnchor(item.nodeId)}`,
       linkLabel: t("ov.map.openNode"),
     };
@@ -1760,7 +1813,7 @@ function describeSelectedItem(
       ? ` · ${item.failingChecks.map((c) => c.checkName).join(", ")}`
       : "";
   return {
-    summary: `${item.nodeName} · ${item.ipv4}${item.label ? ` (${item.label})` : ""} · ${hostPart}${checksPart}`,
+    summary: `${item.nodeName} · ${item.ipv4}${item.label ? ` (${item.label})` : ""} · ${t("ov.map.onlineCount", { count: item.onlinePeerCount })} · ${hostPart}${checksPart}`,
     href: `${NODES_PATH}#${nodeCardAnchor(item.nodeId)}`,
     linkLabel: t("ov.map.openNode"),
   };

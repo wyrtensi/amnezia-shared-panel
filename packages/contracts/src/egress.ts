@@ -94,6 +94,10 @@ export const nodeEgressIpSchema = z.object({
   hostObservedAt: z.iso.datetime().nullable(),
   subnetWarning: z.string().nullable().optional(),
   assignedEndpointCount: z.int().nonnegative().optional(),
+  onlinePeerCount: z.int().nonnegative().optional(),
+  onlineByProtocol: z.record(z.string(), z.int().nonnegative()).optional(),
+  keyUpdateNotifiedAt: z.iso.datetime().nullable().optional(),
+  keyUpdateNotifyNote: z.string().nullable().optional(),
 });
 export type NodeEgressIp = z.infer<typeof nodeEgressIpSchema>;
 

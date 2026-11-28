@@ -3,6 +3,7 @@ import type {
   NodeEgressIp,
   NodeEgressMode,
   NodeEgressModeState,
+  NotifyKeyUpdateResult,
   SwapNodeEgressIpRequest,
   UpdateNodeEgressIpRequest,
   UpdateNodeEgressModeRequest,
@@ -162,4 +163,65 @@ export const reassignKeyEndpoint = (
       method: "PATCH",
       body: JSON.stringify({ endpointId }),
     },
+  );
+
+export const notifyNodeKeyUpdate = (
+  request: Requester,
+  nodeId: string,
+  note: string | null = null,
+): Promise<NotifyKeyUpdateResult> =>
+  request<NotifyKeyUpdateResult>(
+    `/api/admin/nodes/${encodeURIComponent(nodeId)}/notify-key-update`,
+    { method: "POST", body: JSON.stringify({ note }) },
+  );
+
+export const clearNodeKeyUpdate = (
+  request: Requester,
+  nodeId: string,
+): Promise<NotifyKeyUpdateResult> =>
+  request<NotifyKeyUpdateResult>(
+    `/api/admin/nodes/${encodeURIComponent(nodeId)}/notify-key-update`,
+    { method: "DELETE" },
+  );
+
+export const notifyNodeEgressIpKeyUpdate = (
+  request: Requester,
+  nodeId: string,
+  ipId: string,
+  note: string | null = null,
+): Promise<NotifyKeyUpdateResult> =>
+  request<NotifyKeyUpdateResult>(
+    `/api/admin/nodes/${encodeURIComponent(nodeId)}/egress-ips/${encodeURIComponent(ipId)}/notify-key-update`,
+    { method: "POST", body: JSON.stringify({ note }) },
+  );
+
+export const clearNodeEgressIpKeyUpdate = (
+  request: Requester,
+  nodeId: string,
+  ipId: string,
+): Promise<NotifyKeyUpdateResult> =>
+  request<NotifyKeyUpdateResult>(
+    `/api/admin/nodes/${encodeURIComponent(nodeId)}/egress-ips/${encodeURIComponent(ipId)}/notify-key-update`,
+    { method: "DELETE" },
+  );
+
+export const notifyNodeEndpointKeyUpdate = (
+  request: Requester,
+  nodeId: string,
+  endpointId: string,
+  note: string | null = null,
+): Promise<NotifyKeyUpdateResult> =>
+  request<NotifyKeyUpdateResult>(
+    `/api/admin/nodes/${encodeURIComponent(nodeId)}/public-endpoints/${encodeURIComponent(endpointId)}/notify-key-update`,
+    { method: "POST", body: JSON.stringify({ note }) },
+  );
+
+export const clearNodeEndpointKeyUpdate = (
+  request: Requester,
+  nodeId: string,
+  endpointId: string,
+): Promise<NotifyKeyUpdateResult> =>
+  request<NotifyKeyUpdateResult>(
+    `/api/admin/nodes/${encodeURIComponent(nodeId)}/public-endpoints/${encodeURIComponent(endpointId)}/notify-key-update`,
+    { method: "DELETE" },
   );

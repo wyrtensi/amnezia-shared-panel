@@ -10,11 +10,13 @@ import type {
   RequestBridgeAgentUpdateResult,
   InfrastructureItem,
   BridgeEligibility,
+  NodeBridgeRoute,
   NodeBridgeRoutes,
   PrepareBridgeRouteRequest,
   PrepareBridgeRouteResult,
   ReleaseBridgeRouteResult,
   UpdateBridgeRequest,
+  UpdateBridgeRouteTransportRequest,
   VerifyBridgeRouteRequest,
   VerifyBridgeRouteResult,
   ConfigRefreshResult,
@@ -33,12 +35,15 @@ import type {
   KeyEgressInfo,
   KeyNameDisplay,
   KeyRulesUpdate,
+  KeyServerUpdateNotice,
   KeyState,
   AdminReassignKeyEndpointRequest,
   CreateNodeEgressIpRequest,
   NodeEgressIp,
   NodeEgressMode,
   NodeEgressModeState,
+  NotifyKeyUpdateRequest,
+  NotifyKeyUpdateResult,
   NoticeAcks,
   NoticeKind,
   ProtocolKind,
@@ -118,6 +123,7 @@ export type KeyView = {
   routeProfile: RouteProfile;
   rulesOutdated?: boolean;
   rulesUpdate?: KeyRulesUpdate;
+  serverUpdate?: KeyServerUpdateNotice;
   createdAt: string;
   lastUsedAt?: string | null;
   traffic?: { receivedBytes: string; sentBytes: string };
@@ -386,6 +392,12 @@ export interface ControlApiService {
     actor: Actor,
     routeId: string,
   ) => Promise<ReleaseBridgeRouteResult>;
+  /** Update transport (`frp_tcp` / `wytunnel`) and WyTunnel pool/rotation settings for a route. */
+  updateBridgeRouteTransport: (
+    actor: Actor,
+    routeId: string,
+    request: UpdateBridgeRouteTransportRequest,
+  ) => Promise<NodeBridgeRoute>;
   /** VPN nodes and bridges as one typed `kind` union. */
   listInfrastructure: (actor: Actor) => Promise<InfrastructureItem[]>;
   /**
@@ -448,6 +460,37 @@ export interface ControlApiService {
     keyId: string,
     request: AdminReassignKeyEndpointRequest,
   ) => Promise<{ id: string; nodeId: string; endpointId: string; previousEndpointId: string | null }>;
+  notifyNodeKeyUpdate: (
+    actor: Actor,
+    nodeId: string,
+    request: NotifyKeyUpdateRequest,
+  ) => Promise<NotifyKeyUpdateResult>;
+  clearNodeKeyUpdate: (
+    actor: Actor,
+    nodeId: string,
+  ) => Promise<NotifyKeyUpdateResult>;
+  notifyNodeEgressIpKeyUpdate: (
+    actor: Actor,
+    nodeId: string,
+    ipId: string,
+    request: NotifyKeyUpdateRequest,
+  ) => Promise<NotifyKeyUpdateResult>;
+  clearNodeEgressIpKeyUpdate: (
+    actor: Actor,
+    nodeId: string,
+    ipId: string,
+  ) => Promise<NotifyKeyUpdateResult>;
+  notifyNodeEndpointKeyUpdate: (
+    actor: Actor,
+    nodeId: string,
+    endpointId: string,
+    request: NotifyKeyUpdateRequest,
+  ) => Promise<NotifyKeyUpdateResult>;
+  clearNodeEndpointKeyUpdate: (
+    actor: Actor,
+    nodeId: string,
+    endpointId: string,
+  ) => Promise<NotifyKeyUpdateResult>;
 }
 
 export type BridgeTestConfigResult = {

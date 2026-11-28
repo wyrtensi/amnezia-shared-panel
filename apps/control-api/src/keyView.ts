@@ -2,6 +2,8 @@ import type {
   KeyBridgeInfo,
   KeyEgressInfo,
   KeyRulesUpdate,
+  KeyServerUpdateNotice,
+  KeyServerUpdateScope,
   PortalPolicy,
   RouteProfile,
   UserNodeReachability,
@@ -32,6 +34,7 @@ export type KeyRow = {
   routeProfile: RouteProfile;
   routeRuleVersionId: string | null;
   rulesDeliveredAt?: Date | null;
+  configDeliveredAt?: Date | null;
   createdAt: Date;
 };
 
@@ -40,6 +43,40 @@ export type ImportantRuleNotice = {
   id: string;
   notifiedAt: Date;
   note: string | null;
+};
+
+/** Manual admin server-change notice candidate at node, egress IP, or endpoint level. */
+export type ServerUpdateNoticeCandidate = {
+  scope: KeyServerUpdateScope;
+  notifiedAt: Date;
+  note: string | null;
+};
+
+/**
+ * Pick the newest manual server-change notice applicable to an active key,
+ * returning undefined once the owner has downloaded/viewed their own config
+ * after `notifiedAt` (or if the key was created after `notifiedAt`).
+ */
+export const resolveKeyServerUpdate = (
+  key: Pick<KeyRow, "state" | "createdAt" | "configDeliveredAt">,
+  candidates: ReadonlyArray<ServerUpdateNoticeCandidate | null | undefined>,
+): KeyServerUpdateNotice | undefined => {
+  if (key.state !== "active") return undefined;
+  let latest: ServerUpdateNoticeCandidate | null = null;
+  for (const candidate of candidates) {
+    if (!candidate) continue;
+    if (!latest || candidate.notifiedAt.getTime() > latest.notifiedAt.getTime()) {
+      latest = candidate;
+    }
+  }
+  if (!latest) return undefined;
+  const deliveredAt = key.configDeliveredAt ?? key.createdAt;
+  if (deliveredAt.getTime() >= latest.notifiedAt.getTime()) return undefined;
+  return {
+    scope: latest.scope,
+    notifiedAt: latest.notifiedAt.toISOString(),
+    ...(latest.note ? { note: latest.note } : {}),
+  };
 };
 
 /** The two node columns the key's server name is derived from. */
@@ -130,6 +167,7 @@ export const toKeyView = ({
   policy,
   activeByProfile,
   importantByProfile,
+  serverUpdateCandidates,
   nodeReachability,
   bridge,
   egress,
@@ -141,6 +179,8 @@ export const toKeyView = ({
   policy: PortalPolicy;
   activeByProfile: Map<string, string>;
   importantByProfile?: Map<string, ImportantRuleNotice>;
+  /** Manual server-change notice candidates (node, egress IP, endpoint); never leaks IPs/names. */
+  serverUpdateCandidates?: ReadonlyArray<ServerUpdateNoticeCandidate | null | undefined>;
   /** The key's server verdict; undefined when the policy hides node status. */
   nodeReachability?: UserNodeReachability;
   /** Admin-only bridge routing summary; omitted for regular users. */
@@ -169,6 +209,9 @@ export const toKeyView = ({
           ...(latestImportant.note ? { note: latestImportant.note } : {}),
         }
       : { level: "soft" };
+  const serverUpdate = serverUpdateCandidates
+    ? resolveKeyServerUpdate(key, serverUpdateCandidates)
+    : undefined;
 
   return {
     id: key.id,
@@ -198,6 +241,7 @@ export const toKeyView = ({
     routeProfile: key.routeProfile,
     rulesOutdated,
     ...(rulesUpdate ? { rulesUpdate } : {}),
+    ...(serverUpdate ? { serverUpdate } : {}),
     createdAt: key.createdAt.toISOString(),
     lastUsedAt: policy.showLastUsed
       ? (current?.latestHandshakeAt?.toISOString() ?? null)

@@ -532,7 +532,12 @@ export const createDefaultControlApiService = ({
       key.id,
       format,
       createHash("sha256").update(payload).digest("hex"),
-      { key, globalRoutes, markRuleVersion: !isAdminView },
+      {
+        key,
+        globalRoutes,
+        markRuleVersion: !isAdminView,
+        markConfigDelivered: !isAdminView,
+      },
     );
     if (!recorded) {
       throw new ApiError(409, "The configuration changed while being prepared. Download it again.", "CONFIG_EXPORT_STALE");
@@ -663,6 +668,8 @@ export const createDefaultControlApiService = ({
     repository.prepareBridgeRoute(actor, nodeId, request),
   releaseBridgeRoute: (actor, routeId) =>
     repository.releaseBridgeRoute(actor, routeId),
+  updateBridgeRouteTransport: (actor, routeId, request) =>
+    repository.updateBridgeRouteTransport(actor, routeId, request),
   listInfrastructure: (actor) => repository.listInfrastructure(actor),
   getBridgeRouteTestConfig: async (actor, routeId, keyId) => {
     const route = await repository.findBridgeRouteTarget(routeId);
@@ -786,5 +793,29 @@ export const createDefaultControlApiService = ({
   reassignKeyEndpoint: async (actor, keyId, request) => {
     requireAdmin(actor);
     return repository.reassignKeyEndpoint(actor, keyId, request);
+  },
+  notifyNodeKeyUpdate: async (actor, nodeId, request) => {
+    requireAdmin(actor);
+    return repository.notifyNodeKeyUpdate(actor, nodeId, request);
+  },
+  clearNodeKeyUpdate: async (actor, nodeId) => {
+    requireAdmin(actor);
+    return repository.clearNodeKeyUpdate(actor, nodeId);
+  },
+  notifyNodeEgressIpKeyUpdate: async (actor, nodeId, ipId, request) => {
+    requireAdmin(actor);
+    return repository.notifyNodeEgressIpKeyUpdate(actor, nodeId, ipId, request);
+  },
+  clearNodeEgressIpKeyUpdate: async (actor, nodeId, ipId) => {
+    requireAdmin(actor);
+    return repository.clearNodeEgressIpKeyUpdate(actor, nodeId, ipId);
+  },
+  notifyNodeEndpointKeyUpdate: async (actor, nodeId, endpointId, request) => {
+    requireAdmin(actor);
+    return repository.notifyNodeEndpointKeyUpdate(actor, nodeId, endpointId, request);
+  },
+  clearNodeEndpointKeyUpdate: async (actor, nodeId, endpointId) => {
+    requireAdmin(actor);
+    return repository.clearNodeEndpointKeyUpdate(actor, nodeId, endpointId);
   },
 });

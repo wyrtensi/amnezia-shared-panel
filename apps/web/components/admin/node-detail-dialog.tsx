@@ -2,7 +2,7 @@
 
 import * as React from "react";
 import Link from "next/link";
-import { Server } from "lucide-react";
+import { BellRing, Server } from "lucide-react";
 import { toast } from "sonner";
 import type { AdminKey, AdminNode } from "@/components/admin/admin-data";
 import {
@@ -14,10 +14,16 @@ import {
   UpdateAgentDialog,
   computeNodeKeyStats,
 } from "@/components/admin/node-card-suite";
+import {
+  NotifyKeyUpdateDialog,
+  type NotifyKeyUpdateTarget,
+} from "@/components/admin/notify-key-update-dialog";
 import type { NodeTopologyFocus } from "@/components/admin/node-topology-dialog";
 import type { BridgeInfra } from "@/components/admin/use-bridge-infra";
 import type { useReachability } from "@/components/admin/use-reachability";
 import type { useServiceChecks } from "@/components/admin/use-service-checks";
+import { Badge } from "@/components/ui/badge";
+import { Button } from "@/components/ui/button";
 import {
   Dialog,
   DialogContent,
@@ -26,6 +32,7 @@ import {
   DialogTitle,
 } from "@/components/ui/dialog";
 import { setNodeEndpoint, type Requester } from "@/lib/bridge-api";
+import { clearNodeKeyUpdate, notifyNodeKeyUpdate } from "@/lib/egress-api";
 import {
   NODES_PATH,
   describeBridgeError,
@@ -74,6 +81,7 @@ export function NodeDetailDialog({
   const [deleteOpen, setDeleteOpen] = React.useState(false);
   const [updateAgentOpen, setUpdateAgentOpen] = React.useState(false);
   const [capacityOpen, setCapacityOpen] = React.useState(false);
+  const [notifyTarget, setNotifyTarget] = React.useState<NotifyKeyUpdateTarget | null>(null);
 
   React.useEffect(() => {
     if (!node) {
@@ -81,6 +89,7 @@ export function NodeDetailDialog({
       setDeleteOpen(false);
       setUpdateAgentOpen(false);
       setCapacityOpen(false);
+      setNotifyTarget(null);
     }
   }, [node]);
 
@@ -91,7 +100,8 @@ export function NodeDetailDialog({
 
   if (!node) return null;
 
-  const hasSubDialog = editOpen || deleteOpen || updateAgentOpen || capacityOpen;
+  const hasSubDialog =
+    editOpen || deleteOpen || updateAgentOpen || capacityOpen || Boolean(notifyTarget);
   const statusLabel = node.lastError
     ? t("nodes.commError")
     : node.enabled
@@ -130,13 +140,38 @@ export function NodeDetailDialog({
                 {statusLabel}
                 {node.agentVersion ? ` · v${node.agentVersion}` : null}
               </span>
-              <Link
-                href={`${NODES_PATH}#${nodeCardAnchor(node.id)}`}
-                prefetch={false}
-                className="inline-flex shrink-0 items-center gap-1 text-primary underline-offset-2 hover:underline"
-              >
-                {t("ov.map.openNode")}
-              </Link>
+              <span className="flex flex-wrap items-center gap-2">
+                {node.keyUpdateNotifiedAt ? (
+                  <Badge variant="warning" className="text-[11px]">
+                    {t("notifyKeyUpdate.activeBadge")}
+                  </Badge>
+                ) : null}
+                <Button
+                  type="button"
+                  size="sm"
+                  variant="outline"
+                  className="h-7 gap-1 px-2 text-xs"
+                  onClick={() =>
+                    setNotifyTarget({
+                      title: node.publicName || node.name,
+                      notifiedAt: node.keyUpdateNotifiedAt ?? null,
+                      note: node.keyUpdateNotifyNote ?? null,
+                      onNotify: (note) => notifyNodeKeyUpdate(request, node.id, note),
+                      onClear: () => clearNodeKeyUpdate(request, node.id),
+                    })
+                  }
+                >
+                  <BellRing className="size-3.5" />
+                  {t("notifyKeyUpdate.button")}
+                </Button>
+                <Link
+                  href={`${NODES_PATH}#${nodeCardAnchor(node.id)}`}
+                  prefetch={false}
+                  className="inline-flex shrink-0 items-center gap-1 text-primary underline-offset-2 hover:underline"
+                >
+                  {t("ov.map.openNode")}
+                </Link>
+              </span>
             </DialogDescription>
           </DialogHeader>
 
@@ -183,6 +218,11 @@ export function NodeDetailDialog({
         onClose={() => setDeleteOpen(false)}
         request={request}
         reload={handleDeleteReload}
+      />
+      <NotifyKeyUpdateDialog
+        target={notifyTarget}
+        onClose={() => setNotifyTarget(null)}
+        onDone={reload}
       />
     </>
   );

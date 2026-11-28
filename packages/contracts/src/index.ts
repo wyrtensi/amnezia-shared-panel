@@ -454,6 +454,7 @@ export const nodePublicEndpointMutationSchema = z.discriminatedUnion("action", [
     entryName: nodeEndpointNameSchema.optional(),
     customName: nodeEndpointNameSchema.nullish(),
     egressIpId: z.uuid().nullish(),
+    enabledProtocols: protocolListSchema.min(1).nullish(),
   }).strict(),
   z.object({
     action: z.literal("update"),
@@ -464,6 +465,7 @@ export const nodePublicEndpointMutationSchema = z.discriminatedUnion("action", [
     renameEntryGroup: z.boolean().optional(),
     egressIpId: z.uuid().nullish(),
     enabled: z.boolean().optional(),
+    enabledProtocols: protocolListSchema.min(1).nullish(),
     reachabilityEnabled: z.boolean().optional(),
     bridgeMode: endpointBridgeModeSchema.optional(),
     awgGenerator: awgGeneratorSettingsSchema.nullish(),
@@ -477,13 +479,14 @@ export const nodePublicEndpointMutationSchema = z.discriminatedUnion("action", [
       fields.customName !== undefined ||
       fields.egressIpId !== undefined ||
       fields.enabled !== undefined ||
+      fields.enabledProtocols !== undefined ||
       fields.reachabilityEnabled !== undefined ||
       fields.bridgeMode !== undefined ||
       fields.awgGenerator !== undefined ||
       fields.awgMtu !== undefined ||
       fields.awgDeviceRules !== undefined,
     {
-      message: "An endpoint name, exit assignment, availability, reachability, or bridge setting is required",
+      message: "An endpoint name, exit assignment, availability, protocols, reachability, or bridge setting is required",
     },
   ),
   z.object({
@@ -2489,6 +2492,7 @@ export const userNodeEndpointSchema = z.object({
   name: nodeEndpointNameSchema,
   publicAddress: z.ipv4().optional(),
   recommended: z.boolean().optional(),
+  selectableProtocols: protocolListSchema.optional(),
   reachability: userNodeReachabilitySchema.optional(),
   status: z.object({ checks: z.array(userServiceStatusSchema) }).optional(),
 });
@@ -2500,6 +2504,13 @@ export const adminNodeEndpointSchema = userNodeEndpointSchema.extend({
   variantOrdinal: z.int().positive().optional(),
   egressIpId: z.uuid().nullable().optional(),
   effectiveEgressIp: z.string().nullable().optional(),
+  enabledProtocols: protocolListSchema.nullable().optional(),
+  onlinePeerCount: z.int().nonnegative().optional(),
+  onlineByProtocol: z.record(z.string(), z.int().nonnegative()).optional(),
+  assignedKeyCount: z.int().nonnegative().optional(),
+  activeKeyCount: z.int().nonnegative().optional(),
+  keyUpdateNotifiedAt: z.iso.datetime().nullable().optional(),
+  keyUpdateNotifyNote: z.string().nullable().optional(),
   probeObservedEgressIp: z.string().nullable().optional(),
   probeEgressMatch: z.boolean().nullable().optional(),
   awgGenerator: awgGeneratorSettingsSchema.nullish(),
@@ -2530,6 +2541,7 @@ export const nodePublicEndpointMutationResultSchema = z.object({
     reachabilityEnabled: true,
   }).extend({
     bridgeMode: endpointBridgeModeSchema,
+    enabledProtocols: protocolListSchema.nullable().optional(),
     awgGenerator: awgGeneratorSettingsSchema.nullish(),
     awgMtu: awgClientMtuSchema.nullish(),
     awgDeviceRules: awgDeviceRulesSchema.nullish(),
@@ -2681,6 +2693,49 @@ export const keyRulesUpdateSchema = z.object({
   note: z.string().nullable().optional(),
 });
 export type KeyRulesUpdate = z.infer<typeof keyRulesUpdateSchema>;
+
+export const KEY_UPDATE_NOTIFY_NOTE_MAX_LENGTH = 300;
+
+export const keyServerUpdateScopeSchema = z.enum(["node", "exit", "endpoint"]);
+export type KeyServerUpdateScope = z.infer<typeof keyServerUpdateScopeSchema>;
+
+/**
+ * User-visible server-change update notice on a key card. Deliberately never
+ * exposes internal Exit IPs, internal node names, or admin topology details.
+ */
+export const keyServerUpdateNoticeSchema = z.object({
+  scope: keyServerUpdateScopeSchema,
+  notifiedAt: z.iso.datetime(),
+  note: z.string().max(KEY_UPDATE_NOTIFY_NOTE_MAX_LENGTH).nullable().optional(),
+});
+export type KeyServerUpdateNotice = z.infer<typeof keyServerUpdateNoticeSchema>;
+
+export const notifyKeyUpdateRequestSchema = z
+  .object({
+    note: z
+      .string()
+      .nullable()
+      .optional()
+      .transform((value) => {
+        if (value === undefined || value === null) return null;
+        const normalized = value.replace(/[\r\n\t]+/g, " ").trim();
+        return normalized.length > 0 ? normalized : null;
+      })
+      .refine(
+        (value) => value === null || value.length <= KEY_UPDATE_NOTIFY_NOTE_MAX_LENGTH,
+        `Note must be at most ${KEY_UPDATE_NOTIFY_NOTE_MAX_LENGTH} characters`,
+      ),
+  })
+  .default({ note: null });
+export type NotifyKeyUpdateRequest = z.infer<typeof notifyKeyUpdateRequestSchema>;
+
+export const notifyKeyUpdateResultSchema = z.object({
+  scope: keyServerUpdateScopeSchema,
+  notifiedAt: z.iso.datetime().nullable(),
+  note: z.string().nullable(),
+  affectedActiveKeys: z.int().nonnegative(),
+});
+export type NotifyKeyUpdateResult = z.infer<typeof notifyKeyUpdateResultSchema>;
 
 export * from "./bridges.js";
 export * from "./bridgeAgent.js";

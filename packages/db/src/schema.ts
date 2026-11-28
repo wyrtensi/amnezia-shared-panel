@@ -26,6 +26,8 @@ import type {
   BridgeManagementStatus,
   BridgeMetrics,
   BridgeRouteState,
+  BridgeRouteTelemetry,
+  BridgeRouteTransport,
   BridgeVerificationMethod,
   BridgeVerificationResult,
   CheckAssertion,
@@ -46,6 +48,7 @@ import type {
   NodeKeyLimits,
   PortalPolicyOverride,
   ProtocolKind,
+  WytunnelTransportConfig,
 } from "@amnezia/contracts";
 
 export const roleEnum = pgEnum("role", ["user", "admin"]);
@@ -318,6 +321,8 @@ export const nodes = pgTable(
     ),
     hostNetworkReport: jsonb("host_network_report").$type<HostNetworkReport>(),
     egressObservedAt: timestamp("egress_observed_at", { withTimezone: true }),
+    keyUpdateNotifiedAt: timestamp("key_update_notified_at", { withTimezone: true }),
+    keyUpdateNotifyNote: text("key_update_notify_note"),
     ...timestamps,
   },
   (table) => [
@@ -368,6 +373,8 @@ export const nodeEgressIps = pgTable(
       .default(sql`0`)
       .notNull(),
     hostObservedAt: timestamp("host_observed_at", { withTimezone: true }),
+    keyUpdateNotifiedAt: timestamp("key_update_notified_at", { withTimezone: true }),
+    keyUpdateNotifyNote: text("key_update_notify_note"),
     ...timestamps,
   },
   (table) => [
@@ -400,6 +407,11 @@ export const vpnBridges = pgTable(
     controlTcpPort: integer("control_tcp_port").default(7000).notNull(),
     udpPortStart: integer("udp_port_start").default(41000).notNull(),
     udpPortEnd: integer("udp_port_end").default(41031).notNull(),
+    defaultTransport: text("default_transport")
+      .$type<BridgeRouteTransport>()
+      .default("frp_tcp")
+      .notNull(),
+    frpsEnabled: boolean("frps_enabled").default(true).notNull(),
     // Summary of the last bridge-agent observations; written by the poller.
     managementStatus: text("management_status")
       .$type<BridgeManagementStatus>()
@@ -455,6 +467,10 @@ export const vpnBridges = pgTable(
     check(
       "vpn_bridges_udp_port_order",
       sql`${table.udpPortStart} <= ${table.udpPortEnd}`,
+    ),
+    check(
+      "vpn_bridges_default_transport_valid",
+      sql`${table.defaultTransport} in ('frp_tcp', 'wytunnel')`,
     ),
     check(
       "vpn_bridges_management_status_valid",
@@ -544,6 +560,16 @@ export const vpnBridgeRoutes = pgTable(
       .references(() => vpnBridges.id, { onDelete: "restrict" }),
     publicUdpPort: integer("public_udp_port").notNull(),
     state: text("state").$type<BridgeRouteState>().default("draft").notNull(),
+    transport: text("transport")
+      .$type<BridgeRouteTransport>()
+      .default("frp_tcp")
+      .notNull(),
+    transportPort: integer("transport_port"),
+    transportConfigJson: jsonb("transport_config_json")
+      .$type<Partial<WytunnelTransportConfig>>()
+      .default({})
+      .notNull(),
+    observedTelemetry: jsonb("observed_telemetry").$type<BridgeRouteTelemetry>(),
     // Always `awg-route-<route uuid>`; stored so observations can be matched.
     frpProxyName: text("frp_proxy_name").notNull(),
     observedOnline: boolean("observed_online"),
@@ -575,6 +601,14 @@ export const vpnBridgeRoutes = pgTable(
     uniqueIndex("vpn_bridge_routes_node_active_unique")
       .on(table.nodeId)
       .where(sql`${table.state} = 'active'`),
+    check(
+      "vpn_bridge_routes_transport_valid",
+      sql`${table.transport} in ('frp_tcp', 'wytunnel')`,
+    ),
+    check(
+      "vpn_bridge_routes_transport_port_range",
+      sql`${table.transportPort} is null or ${table.transportPort} between 1 and 65535`,
+    ),
     check(
       "vpn_bridge_routes_state_valid",
       sql`${table.state} in ('draft', 'active', 'retiring')`,
@@ -698,6 +732,7 @@ export const nodeVpnEndpoints = pgTable(
       onDelete: "set null",
     }),
     enabled: boolean("enabled").default(true).notNull(),
+    enabledProtocols: jsonb("enabled_protocols").$type<ProtocolKind[]>(),
     reachabilityEnabled: boolean("reachability_enabled").default(true).notNull(),
     revision: integer("revision").default(0).notNull(),
     bridgeMode: text("bridge_mode").$type<EndpointBridgeMode>().default("inherit").notNull(),
@@ -715,6 +750,8 @@ export const nodeVpnEndpoints = pgTable(
     probeDetail: varchar("probe_detail", { length: 300 }),
     probeObservedEgressIp: text("probe_observed_egress_ip"),
     probeEgressMatch: boolean("probe_egress_match"),
+    keyUpdateNotifiedAt: timestamp("key_update_notified_at", { withTimezone: true }),
+    keyUpdateNotifyNote: text("key_update_notify_note"),
   },
   (table) => [
     uniqueIndex("node_vpn_endpoints_ordinal_unique").on(table.nodeId, table.ordinal),
@@ -778,6 +815,9 @@ export const vpnKeys = pgTable(
     // actually delivered to the owner. Distinct from `configUpdatedAt`, which
     // also moves on admin-side AWG client profile changes.
     rulesDeliveredAt: timestamp("rules_delivered_at", { withTimezone: true }),
+    // Updated ONLY when the key owner downloads/views their own config; used to
+    // clear server/exit/endpoint important-change notices without admin leakage.
+    configDeliveredAt: timestamp("config_delivered_at", { withTimezone: true }),
     configCiphertext: text("config_ciphertext"),
     configNonce: text("config_nonce"),
     configAuthTag: text("config_auth_tag"),

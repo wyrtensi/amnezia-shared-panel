@@ -37,6 +37,7 @@ const bridge: Bridge = {
       nodeName: "Node A",
       publicUdpPort: 41000,
       state: "active",
+      transport: "frp_tcp",
       // The bridge is stale, so the API reads its routes as unknown.
       registration: { status: "unknown", marker: null, observedAt: "2026-11-13T09:00:00.000Z" },
       verification: { kind: "awg_path", status: "unknown", checkedAt: null },
@@ -47,6 +48,7 @@ const bridge: Bridge = {
       nodeName: "Node B",
       publicUdpPort: 41001,
       state: "draft",
+      transport: "frp_tcp",
       registration: { status: "unknown", marker: null, observedAt: null },
       verification: { kind: "candidate", status: "none", method: null, verifiedAt: null, error: null },
     },
@@ -297,7 +299,9 @@ describe("BridgeCardView", () => {
       fileURLToPath(new URL("./bridges-tab.tsx", import.meta.url)),
       "utf8",
     );
-    expect(src).toContain("const hasSubDialog = renaming || deleting || updating;");
+    expect(src).toContain(
+      "const hasSubDialog = renaming || deleting || updating || Boolean(editingRouteTransport);",
+    );
     expect(src).toContain("if (!next && !hasSubDialog) onClose();");
     expect(src).toContain("onInteractOutside={(e) => {");
     expect(src).toContain("onEscapeKeyDown={(e) => {");
@@ -322,6 +326,57 @@ describe("BridgeCardView", () => {
         />,
       ),
     ).not.toThrow();
+  });
+
+  it("renders WyTunnel pool telemetry and disabled frps badge without false FRP errors", () => {
+    const html = render({
+      ...bridge,
+      defaultTransport: "wytunnel",
+      frpsEnabled: false,
+      managementStatus: "ok",
+      management: {
+        apiUrl: "http://host.docker.internal:17600",
+        enrolled: true,
+        enrolledAt: "2026-11-13T08:00:00.000Z",
+        agentVersion: "0.2.0",
+        agentApiVersion: 1,
+        agentCapabilities: ["status.v1", "wytunnel.v1"],
+        frpsVersion: null,
+        frpsReachable: false,
+        lastErrorCode: null,
+        lastPollAttemptAt: "2026-11-13T10:00:00.000Z",
+      },
+      routes: [
+        {
+          ...bridge.routes[0]!,
+          transport: "wytunnel",
+          transportPort: 44300,
+          transportConfig: {
+            poolSize: 10,
+            poolRotateIntervalSec: 1800,
+            poolRotateDrainSec: 30,
+            keepaliveSec: 10,
+            fec: null,
+            handshakeMode: "none",
+            ebpfEnabled: false,
+          },
+          registration: { status: "online", marker: "wt-1", observedAt: "2026-11-13T10:00:00.000Z" },
+          telemetry: {
+            mode: "pool",
+            healthyStreams: 10,
+            targetStreams: 10,
+            poolRttMs: 24,
+            failoversTotal: 1,
+            rotationsTotal: 3,
+            activeSessions: 7,
+          },
+        },
+      ],
+    });
+    expect(html).toContain("WyTunnel");
+    expect(html).toContain("10/10");
+    expect(html).toContain("24 ms");
+    expect(html).toContain("frps");
   });
 });
 
@@ -502,6 +557,8 @@ describe("BridgeRouteFacts", () => {
     bridgeId: bridge.id,
     publicUdpPort: 41001,
     state: "draft",
+    transport: "frp_tcp",
+    transportPort: null,
     frpProxyName: "awg-route-x",
     observedOnline: true,
     observedRegistrationMarker: "marker-1",

@@ -299,6 +299,36 @@ export function KeyCard({
             </div>
           ) : null}
 
+          {active && keyView.serverUpdate ? (
+            <Callout
+              tone="warning"
+              icon={<TriangleAlert className="h-4 w-4 text-warning" />}
+              title={t("keyCard.serverUpdateTitle")}
+            >
+              <span className="block">{t("keyCard.serverUpdateBody")}</span>
+              {keyView.serverUpdate.note ? (
+                <span className="mt-1 block text-foreground">
+                  {t("keyCard.rulesUpdatedNote", {
+                    note: keyView.serverUpdate.note,
+                  })}
+                </span>
+              ) : null}
+              {me.policy.allowConfigRedownload &&
+              !(keyView.rulesOutdated && keyView.rulesUpdate?.level === "important") ? (
+                <Button
+                  type="button"
+                  size="sm"
+                  className="mt-2 h-auto min-h-8 max-w-full whitespace-normal py-1 text-left"
+                  disabled={busy}
+                  onClick={() => guardKeyAccess(onShowConfig)}
+                >
+                  <Download className="h-4 w-4" />
+                  {t("keyCard.redownload")}
+                </Button>
+              ) : null}
+            </Callout>
+          ) : null}
+
           {active &&
           keyView.rulesOutdated &&
           keyView.rulesUpdate?.level === "important" ? (

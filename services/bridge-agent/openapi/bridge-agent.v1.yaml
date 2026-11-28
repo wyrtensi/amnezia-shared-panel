@@ -123,7 +123,7 @@ components:
         bridgeId: { type: string, format: uuid }
         agentVersion: { type: string }
         apiVersion: { type: integer, enum: [1] }
-        capabilities: { type: array, items: { type: string }, example: ["status.v1", "update.v1"] }
+        capabilities: { type: array, items: { type: string }, example: ["status.v1", "update.v1", "wytunnel.v1"] }
     UpdateRequest:
       type: object
       required: [operationId, imageRepository, imageDigest, notAfter]
@@ -151,8 +151,9 @@ components:
         frps:
           type: object
           required: [reachable, version]
-          description: reachable is true only when both frps reads succeeded; otherwise proxies is empty and proves nothing.
+          description: reachable is true only when both frps reads succeeded; enabled is false when frps is intentionally disabled.
           properties:
+            enabled: { type: boolean }
             reachable: { type: boolean }
             version: { type: string, nullable: true }
         frpsTls:
@@ -211,6 +212,36 @@ components:
                 type: string
                 nullable: true
                 pattern: "^[0-9a-f]{32}$"
+        wytunnel:
+          type: array
+          description: Observed WyTunnel client instances discovered on /run/amnezia-wytunnel.
+          items:
+            type: object
+            required: [routeId, remotePort, online, registrationMarker]
+            properties:
+              routeId: { type: string, format: uuid }
+              remotePort: { type: integer, nullable: true }
+              online: { type: boolean }
+              registrationMarker: { type: string, nullable: true, pattern: "^[0-9a-f]{32}$" }
+              telemetry:
+                type: object
+                properties:
+                  version: { type: string }
+                  mode: { type: string, enum: [direct, pool] }
+                  ebpfMode: { type: string, enum: [nic, userspace_fallback] }
+                  uptimeSec: { type: integer, minimum: 0 }
+                  activeSessions: { type: integer, minimum: 0 }
+                  healthyStreams: { type: integer, minimum: 0 }
+                  targetStreams: { type: integer, minimum: 0 }
+                  drainingStreams: { type: integer, minimum: 0 }
+                  poolRttMs: { type: number, nullable: true, minimum: 0 }
+                  rxPackets: { type: integer, minimum: 0 }
+                  txPackets: { type: integer, minimum: 0 }
+                  fecRecovered: { type: integer, minimum: 0 }
+                  fecLostGroups: { type: integer, minimum: 0 }
+                  keepaliveResets: { type: integer, minimum: 0 }
+                  failoversTotal: { type: integer, minimum: 0 }
+                  rotationsTotal: { type: integer, minimum: 0 }
         errors:
           type: array
           maxItems: 8

@@ -2812,9 +2812,29 @@ async function cmdNodeUpdate(args: string[]): Promise<void> {
   const endpointEntryName = flagOf(args, "endpoint-entry-name");
   const endpointCustomName = flagOf(args, "endpoint-custom-name");
   const endpointEgressId = flagOf(args, "endpoint-egress-id");
+  const endpointProtocols = flagOf(args, "endpoint-protocols");
   const endpointEnabled = flagOf(args, "endpoint-enabled");
   const endpointReachability = flagOf(args, "endpoint-reachability");
   const endpointBridgeMode = flagOf(args, "endpoint-bridge-mode");
+  const parseEndpointProtocols = (raw: string): Array<"awg3" | "awg2"> | null => {
+    const norm = raw.trim().toLowerCase();
+    if (norm === "inherit" || norm === "null" || norm === "default") return null;
+    const list = norm
+      .split(",")
+      .map((s) => s.trim())
+      .filter(Boolean);
+    if (list.length === 0) {
+      throw new Error("--endpoint-protocols expects a comma-separated list (e.g. awg3,awg2) or inherit");
+    }
+    const valid: Array<"awg3" | "awg2"> = [];
+    for (const item of list) {
+      if (item !== "awg3" && item !== "awg2") {
+        throw new Error(`Unsupported protocol "${item}" in --endpoint-protocols (use awg3, awg2, or inherit)`);
+      }
+      if (!valid.includes(item)) valid.push(item);
+    }
+    return valid;
+  };
   const endpointRemove = args.includes("--endpoint-remove");
   const reassignEndpointId = flagOf(args, "reassign-endpoint-id");
   if (endpointIp !== undefined && endpointId !== undefined) {
@@ -2844,6 +2864,9 @@ async function cmdNodeUpdate(args: string[]): Promise<void> {
       ...(endpointEgressId !== undefined
         ? { egressIpId: endpointEgressId === "null" ? null : endpointEgressId }
         : {}),
+      ...(endpointProtocols !== undefined
+        ? { enabledProtocols: parseEndpointProtocols(endpointProtocols) }
+        : {}),
     };
   } else if (endpointId !== undefined) {
     body.publicEndpoint = {
@@ -2856,6 +2879,9 @@ async function cmdNodeUpdate(args: string[]): Promise<void> {
         : {}),
       ...(endpointEgressId !== undefined
         ? { egressIpId: endpointEgressId === "null" ? null : endpointEgressId }
+        : {}),
+      ...(endpointProtocols !== undefined
+        ? { enabledProtocols: parseEndpointProtocols(endpointProtocols) }
         : {}),
       enabled: endpointEnabled === undefined ? undefined : parseBoolFlag("endpoint-enabled", endpointEnabled),
       reachabilityEnabled:
@@ -2871,6 +2897,7 @@ async function cmdNodeUpdate(args: string[]): Promise<void> {
     endpointEntryName !== undefined ||
     endpointCustomName !== undefined ||
     endpointEgressId !== undefined ||
+    endpointProtocols !== undefined ||
     endpointEnabled !== undefined ||
     endpointReachability !== undefined ||
     endpointBridgeMode !== undefined
@@ -2885,6 +2912,54 @@ async function cmdNodeUpdate(args: string[]): Promise<void> {
     body: JSON.stringify(body),
   });
   console.log(`node ${id} updated: ${Object.keys(body).join(", ")}`);
+}
+
+async function cmdNodeNotifyKeyUpdate(args: string[]): Promise<void> {
+  const usageText =
+    "Usage: node-notify-key-update <node-id|name> [--exit=<ip-id|ipv4>] [--endpoint=<endpoint-id>] [--note=<text>] [--clear] [--json]";
+  const nodeRef = positionals(args)[0];
+  if (!nodeRef) throw new Error(usageText);
+  const exitRef = flagOf(args, "exit");
+  const endpointRef = flagOf(args, "endpoint");
+  if (exitRef && endpointRef) {
+    throw new Error("Specify at most one of --exit or --endpoint\n" + usageText);
+  }
+  const clear = args.includes("--clear");
+  const note = flagOf(args, "note");
+  const node = await findAdminNode(nodeRef);
+  let path = `/api/admin/nodes/${node.id}/notify-key-update`;
+  let targetLabel = `node ${node.name}`;
+  if (exitRef) {
+    const ips = node.egressIps ?? (await api<NodeEgressIp[]>(`/api/admin/nodes/${node.id}/egress-ips`));
+    const match = ips.find((ip) => ip.id === exitRef || ip.ipv4 === exitRef);
+    if (!match) {
+      throw new Error(`No Exit IP matching "${exitRef}" on node ${node.name}`);
+    }
+    path = `/api/admin/nodes/${node.id}/egress-ips/${match.id}/notify-key-update`;
+    targetLabel = `exit IP ${match.ipv4} on ${node.name}`;
+  } else if (endpointRef) {
+    const match = (node.publicEndpoints ?? []).find(
+      (ep) => ep.id === endpointRef || ep.name === endpointRef,
+    );
+    const epId = match?.id ?? endpointRef;
+    path = `/api/admin/nodes/${node.id}/public-endpoints/${epId}/notify-key-update`;
+    targetLabel = `endpoint ${match?.name ?? epId} on ${node.name}`;
+  }
+  const result = await api<{
+    scope: string;
+    notifiedAt: string | null;
+    note: string | null;
+    affectedActiveKeys: number;
+  }>(path, clear ? { method: "DELETE" } : { method: "POST", body: JSON.stringify({ note: note ?? null }) });
+  if (wantsJson(args)) return json(result);
+  if (clear) {
+    console.log(`Cleared key-update notice for ${targetLabel}.`);
+  } else {
+    console.log(
+      `Notified ${result.affectedActiveKeys} active key(s) for ${targetLabel} (${result.notifiedAt ?? "—"}).`,
+    );
+    if (result.note) console.log(`  note: ${result.note}`);
+  }
 }
 
 async function cmdNodeRemove(args: string[]): Promise<void> {
@@ -4112,6 +4187,9 @@ Nodes:
   node-update <id> --endpoint-ip=<ipv4> [--endpoint-name=<name>]
   node-update <id> --endpoint-id=<uuid> [--endpoint-name=<name>] [--endpoint-enabled=true|false]
             [--endpoint-reachability=true|false] [--endpoint-bridge-mode=inherit|direct|bridge]
+            [--endpoint-protocols=awg3,awg2|inherit]
+  node-notify-key-update <node> [--exit=<id|ipv4>] [--endpoint=<id>] [--note=<text>] [--clear] [--json]
+                                          Trigger or clear a manual "update your key" notice
   node-remove <id>                        Delete a node (refused while it has keys)
   node-remove <id> --with-keys            Delete a node AND every key ever issued
              --confirm=<node name>        on it. Irreversible; the name must match
@@ -5009,6 +5087,8 @@ export async function dispatch(argv: string[]): Promise<void> {
       return cmdNodeExitSwap(args);
     case "node-exit-verify":
       return cmdNodeExitVerify(args);
+    case "node-notify-key-update":
+      return cmdNodeNotifyKeyUpdate(args);
     case "key-reassign-endpoint":
       return cmdKeyReassignEndpoint(args);
     case "node-agent-update":

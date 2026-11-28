@@ -12,6 +12,8 @@ const route: NodeBridgeRoute = {
   bridgeId: "00000000-0000-4000-8000-000000000003",
   publicUdpPort: 41001,
   state: "draft",
+  transport: "frp_tcp",
+  transportPort: null,
   frpProxyName: "awg-test",
   observedOnline: true,
   observedRegistrationMarker: "test-marker",

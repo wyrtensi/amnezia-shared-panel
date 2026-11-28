@@ -3,6 +3,7 @@ import type {
   KeyBridgeInfo,
   KeyEgressInfo,
   KeyNameDisplay,
+  KeyServerUpdateNotice,
   UserNodeEndpoint,
   UserNodeReachability,
 } from "@amnezia/contracts";
@@ -268,6 +269,7 @@ export type KeyView = {
   routeProfile: string;
   rulesOutdated?: boolean;
   rulesUpdate?: KeyRulesUpdate;
+  serverUpdate?: KeyServerUpdateNotice;
   createdAt: string;
   lastUsedAt?: string | null;
   traffic?: KeyTraffic;
