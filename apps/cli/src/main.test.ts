@@ -2298,14 +2298,14 @@ describe("bridge commands", () => {
     ]);
 
     expect(calls).toHaveLength(2);
-    expect(JSON.parse(String(calls[0]!.init?.body))).toEqual({
+    expect(JSON.parse(calls[0]!.init?.body as string)).toEqual({
       transportConfig: {
         handshakeMode: "http_ws_upgrade",
         handshakeSni: "ws.example.org",
         handshakePath: "/ws/awg",
       },
     });
-    expect(JSON.parse(String(calls[1]!.init?.body))).toEqual({
+    expect(JSON.parse(calls[1]!.init?.body as string)).toEqual({
       transportConfig: {
         handshakeMode: "custom",
         handshakeSni: null,
