@@ -215,9 +215,14 @@ export function BridgeTransportDialog({
                 keepaliveSec,
                 fec,
                 handshakeMode,
-                handshakeSni: handshakeSni.trim() || null,
-                handshakePath: handshakePath.trim() || null,
-                handshakePacketData: handshakePacketData.trim() || null,
+                handshakeSni:
+                  handshakeMode === "tls_client_hello" || handshakeMode === "http_ws_upgrade"
+                    ? handshakeSni.trim() || null
+                    : null,
+                handshakePath:
+                  handshakeMode === "http_ws_upgrade" ? handshakePath.trim() || null : null,
+                handshakePacketData:
+                  handshakeMode === "custom" ? handshakePacketData.trim() || null : null,
                 ebpfEnabled,
               },
             }

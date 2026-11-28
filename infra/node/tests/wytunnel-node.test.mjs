@@ -1,4 +1,5 @@
 import { execFileSync } from "node:child_process";
+import { readFileSync } from "node:fs";
 import { fileURLToPath } from "node:url";
 import test from "node:test";
 import assert from "node:assert/strict";
@@ -92,4 +93,10 @@ test("install-wytunnel-node.sh maps tls_client_hello, http_ws_upgrade, and custo
       { stdio: "pipe" },
     ),
   );
+});
+
+test("install-wytunnel-node.sh passes $EXTRA_ARGS unbraced in systemd ExecStart for word-splitting", () => {
+  const src = readFileSync(nodeScript, "utf8");
+  assert.match(src, /ExecStart=.* \\\$EXTRA_ARGS$/m);
+  assert.doesNotMatch(src, /ExecStart=.*\\\$\{EXTRA_ARGS\}/m);
 });

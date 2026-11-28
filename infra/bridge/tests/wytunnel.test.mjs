@@ -1,4 +1,5 @@
 import { execFileSync } from "node:child_process";
+import { readFileSync } from "node:fs";
 import { fileURLToPath } from "node:url";
 import test from "node:test";
 import assert from "node:assert/strict";
@@ -105,4 +106,11 @@ test("install-wytunnel-bridge.sh supports tls_client_hello, http_ws_upgrade, and
       { stdio: "pipe" },
     ),
   );
+});
+
+test("install-wytunnel-bridge.sh escapes systemd $$tmp and passes $EXTRA_ARGS unbraced for word-splitting", () => {
+  const src = readFileSync(bridgeScript, "utf8");
+  assert.match(src, /ExecStart=.* \\\$EXTRA_ARGS$/m);
+  assert.doesNotMatch(src, /ExecStart=.*\\\$\{EXTRA_ARGS\}/m);
+  assert.match(src, /ExecStartPre=\/bin\/sh -c '.*"\\\$\\\$tmp"/m);
 });

@@ -460,8 +460,8 @@ EnvironmentFile=${ETC_DIR}/%i.env
 RuntimeDirectory=amnezia-wytunnel
 RuntimeDirectoryPreserve=yes
 ExecStartPre=${FW_HELPER} up bridge %i \${TUN_NAME} \${TUN_PEER} \${NODE_IP} \${TRANSPORT_PORT} \${WAN_IF}
-ExecStartPre=/bin/sh -c 'tmp="\$(mktemp ${RUN_DIR}/.client-%i.meta.json.XXXXXX)"; printf "{\"remotePort\":%s,\"transportPort\":%s,\"startedAt\":\"%s\"}\n" "\${REMOTE_PORT}" "\${TRANSPORT_PORT}" "\$(date -u +%%Y-%%m-%%dT%%H:%%M:%%SZ)" >"\$tmp" && chmod 0644 "\$tmp" && mv -f "\$tmp" ${RUN_DIR}/client-%i.meta.json'
-ExecStart=${WYTUNNEL_BIN} --local 0.0.0.0:\${REMOTE_PORT} --remote \${NODE_IP}:\${TRANSPORT_PORT} --tun \${TUN_NAME} --tun-local \${TUN_LOCAL} --tun-peer \${TUN_PEER} --ipv4-only --metrics-listen ${RUN_DIR}/client-%i.sock \${EXTRA_ARGS}
+ExecStartPre=/bin/sh -c 'tmp="\$(mktemp ${RUN_DIR}/.client-%i.meta.json.XXXXXX)"; printf "{\"remotePort\":%s,\"transportPort\":%s,\"startedAt\":\"%s\"}\n" "\${REMOTE_PORT}" "\${TRANSPORT_PORT}" "\$(date -u +%%Y-%%m-%%dT%%H:%%M:%%SZ)" >"\$\$tmp" && chmod 0644 "\$\$tmp" && mv -f "\$\$tmp" ${RUN_DIR}/client-%i.meta.json'
+ExecStart=${WYTUNNEL_BIN} --local 0.0.0.0:\${REMOTE_PORT} --remote \${NODE_IP}:\${TRANSPORT_PORT} --tun \${TUN_NAME} --tun-local \${TUN_LOCAL} --tun-peer \${TUN_PEER} --ipv4-only --metrics-listen ${RUN_DIR}/client-%i.sock \$EXTRA_ARGS
 ExecStopPost=-${FW_HELPER} down bridge %i \${TUN_NAME} \${TUN_PEER} \${NODE_IP} \${TRANSPORT_PORT} \${WAN_IF}
 ExecStopPost=-/bin/rm -f ${RUN_DIR}/client-%i.sock ${RUN_DIR}/client-%i.meta.json
 Restart=always
