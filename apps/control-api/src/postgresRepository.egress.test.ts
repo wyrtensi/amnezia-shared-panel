@@ -1,5 +1,6 @@
 import { describe, expect, it } from "vitest";
 import {
+  resolveEffectiveKeyAttachment,
   resolveEndpointEffectiveEgressIp,
   resolveKeyEgressInfo,
 } from "./postgresRepository.js";
@@ -117,5 +118,61 @@ describe("resolveKeyEgressInfo", () => {
       dnsSecondary: "1.0.0.1",
       mode: "masquerade",
     });
+  });
+});
+
+describe("resolveEffectiveKeyAttachment", () => {
+  const ep1 = { id: "ep-1", ordinal: 1, egressIpId: "ex-1", publicAddress: "198.51.100.10" };
+  const ep2 = { id: "ep-2", ordinal: 2, egressIpId: "ex-2", publicAddress: "198.51.100.11" };
+  const endpointsById = new Map([
+    [ep1.id, ep1],
+    [ep2.id, ep2],
+  ]);
+  const exitMain = { id: "ex-main", ipv4: "198.51.100.10" };
+  const exit1 = { id: "ex-1", ipv4: "203.0.113.1" };
+  const exit2 = { id: "ex-2", ipv4: "203.0.113.2" };
+  const nodeEgressIps = [exitMain, exit1, exit2];
+
+  it("ignores AWG 3.1 endpoints and routed exits for AWG 2.0 keys", () => {
+    expect(
+      resolveEffectiveKeyAttachment({
+        protocol: "awg2",
+        endpointId: "ep-2",
+        endpointsById,
+        primaryEndpoint: ep1,
+        nodePublicIp: "198.51.100.10",
+        nodeEgressMode: "routed",
+        nodeEgressDefaultIpId: "ex-1",
+        nodeEgressIps,
+      }),
+    ).toEqual({ endpoint: null, exitIp: exitMain });
+  });
+
+  it("resolves explicit or primary endpoint and routed/masquerade exit for AWG 3.1 keys", () => {
+    expect(
+      resolveEffectiveKeyAttachment({
+        protocol: "awg3",
+        endpointId: "ep-2",
+        endpointsById,
+        primaryEndpoint: ep1,
+        nodePublicIp: "198.51.100.10",
+        nodeEgressMode: "routed",
+        nodeEgressDefaultIpId: "ex-1",
+        nodeEgressIps,
+      }),
+    ).toEqual({ endpoint: ep2, exitIp: exit2 });
+
+    expect(
+      resolveEffectiveKeyAttachment({
+        protocol: "awg3",
+        endpointId: null,
+        endpointsById,
+        primaryEndpoint: ep1,
+        nodePublicIp: "198.51.100.10",
+        nodeEgressMode: "masquerade",
+        nodeEgressDefaultIpId: "ex-1",
+        nodeEgressIps,
+      }),
+    ).toEqual({ endpoint: ep1, exitIp: exitMain });
   });
 });

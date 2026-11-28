@@ -89,6 +89,7 @@ COPY --from=deploy \
   scripts/install-capacity-applier.sh \
   scripts/install-egressd.sh \
   scripts/install-host-services.sh \
+  scripts/install-wytunnel-node.sh \
   scripts/set-capacity.sh \
   scripts/switch-egress-mode.sh \
   scripts/common.sh \

@@ -98,18 +98,18 @@ export type RouteSetupInput = {
 export const routeSetupCommands = (route: RouteSetupInput): RouteSetupCommands => {
   if (route.transport === "wytunnel") {
     const cfg = normalizeWytunnelTransportConfig(route.transportConfig);
+    const udpPoolStart = route.udpPortStart ?? 41000;
     const transportPort =
-      route.transportPort ??
-      deriveWytunnelTransportPort(route.publicUdpPort, route.udpPortStart);
-    const slot = Math.max(0, route.publicUdpPort - (route.udpPortStart ?? 41000));
+      route.transportPort ?? deriveWytunnelTransportPort(route.publicUdpPort, udpPoolStart);
     const fecValue = cfg.fec ? `${cfg.fec.k}:${cfg.fec.m}` : null;
     const nodeTargetIp = route.nodePublicIp?.trim() || "<NODE_PUBLIC_IP>";
 
     const nodeArgs: Array<[string, string | number]> = [
       ["--route-id", route.id],
       ["--bridge-ip", route.bridgePublicIpv4],
+      ["--remote-port", route.publicUdpPort],
       ["--transport-port", transportPort],
-      ["--slot", slot],
+      ["--udp-pool-start", udpPoolStart],
       ["--keepalive", cfg.keepaliveSec],
       ["--handshake-mode", cfg.handshakeMode],
     ];
@@ -121,11 +121,10 @@ export const routeSetupCommands = (route: RouteSetupInput): RouteSetupCommands =
 
     const bridgeArgs: Array<[string, string | number]> = [
       ["--route-id", route.id],
-      ["--bridge-id", route.bridgeId],
-      ["--public-port", route.publicUdpPort],
+      ["--remote-port", route.publicUdpPort],
       ["--node-ip", nodeTargetIp],
       ["--transport-port", transportPort],
-      ["--slot", slot],
+      ["--udp-pool-start", udpPoolStart],
       ["--pool-size", cfg.poolSize],
       ["--pool-rotate-interval", cfg.poolRotateIntervalSec],
       ["--pool-rotate-drain", cfg.poolRotateDrainSec],

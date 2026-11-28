@@ -24,6 +24,7 @@ import {
 } from "@amnezia/contracts";
 import type { AdminNode } from "@/components/admin/admin-data";
 import { metricBytes } from "@/components/admin/node-metrics";
+import { PROTOCOLS } from "@/components/protocol-select";
 import {
   NotifyKeyUpdateDialog,
   type NotifyKeyUpdateTarget,
@@ -216,36 +217,66 @@ export function NodeTopologyDialog({
   initialFocus = null,
 }: NodeTopologyDialogProps) {
   const { t } = useT();
+  const [notifyTarget, setNotifyTarget] =
+    React.useState<NotifyKeyUpdateTarget | null>(null);
+
+  React.useEffect(() => {
+    setNotifyTarget(null);
+  }, [node?.id]);
+
   if (!node) return null;
 
+  const hasSubDialog = Boolean(notifyTarget);
+
   return (
-    <Dialog open={Boolean(node)} onOpenChange={(next) => !next && onClose()}>
-      <DialogContent className="max-h-[90vh] overflow-y-auto sm:max-w-3xl">
-        <DialogHeader>
-          <DialogTitle className="flex min-w-0 items-center gap-2 break-words pr-6">
-            <GitBranch className="size-4 shrink-0 text-primary" />
-            <span className="min-w-0 break-words">
-              {t("egress.dialogTitle", { name: node.publicName || node.name })}
-            </span>
-          </DialogTitle>
-          <DialogDescription>{t("egress.dialogDesc")}</DialogDescription>
-        </DialogHeader>
+    <>
+      <Dialog
+        open={Boolean(node)}
+        onOpenChange={(next) => {
+          if (!next && !hasSubDialog) onClose();
+        }}
+      >
+        <DialogContent
+          className="max-h-[90vh] overflow-y-auto sm:max-w-3xl"
+          onEscapeKeyDown={(event) => {
+            if (hasSubDialog) event.preventDefault();
+          }}
+          onInteractOutside={(event) => {
+            if (hasSubDialog) event.preventDefault();
+          }}
+        >
+          <DialogHeader>
+            <DialogTitle className="flex min-w-0 items-center gap-2 break-words pr-6">
+              <GitBranch className="size-4 shrink-0 text-primary" />
+              <span className="min-w-0 break-words">
+                {t("egress.dialogTitle", { name: node.publicName || node.name })}
+              </span>
+            </DialogTitle>
+            <DialogDescription>{t("egress.dialogDesc")}</DialogDescription>
+          </DialogHeader>
 
-        <NodeTopologyDialogBody
-          node={node}
-          request={request}
-          reload={reload}
-          onSavePublicEndpoint={onSavePublicEndpoint}
-          initialFocus={initialFocus}
-        />
+          <NodeTopologyDialogBody
+            node={node}
+            request={request}
+            reload={reload}
+            onSavePublicEndpoint={onSavePublicEndpoint}
+            initialFocus={initialFocus}
+            onOpenNotify={setNotifyTarget}
+          />
 
-        <DialogFooter>
-          <Button type="button" variant="outline" onClick={onClose}>
-            {t("common.close")}
-          </Button>
-        </DialogFooter>
-      </DialogContent>
-    </Dialog>
+          <DialogFooter>
+            <Button type="button" variant="outline" onClick={onClose}>
+              {t("common.close")}
+            </Button>
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
+      <NotifyKeyUpdateDialog
+        target={notifyTarget}
+        onClose={() => setNotifyTarget(null)}
+        onDone={reload}
+      />
+    </>
   );
 }
 
@@ -256,6 +287,7 @@ export function NodeTopologyDialogBody({
   reload,
   onSavePublicEndpoint,
   initialFocus = null,
+  onOpenNotify,
 }: {
   node: AdminNode;
   request: Requester;
@@ -265,6 +297,7 @@ export function NodeTopologyDialogBody({
     change: NodePublicEndpointMutation,
   ) => Promise<void>;
   initialFocus?: NodeTopologyFocus | null;
+  onOpenNotify?: (target: NotifyKeyUpdateTarget) => void;
 }) {
   const { t, lang } = useT();
   const bodyRef = React.useRef<HTMLDivElement>(null);
@@ -312,6 +345,7 @@ export function NodeTopologyDialogBody({
   );
   const [varCustomName, setVarCustomName] = React.useState("");
   const [varExitId, setVarExitId] = React.useState<string>(DEFAULT_EXIT_SENTINEL);
+  const [varProtocols, setVarProtocols] = React.useState<ProtocolKind[] | null>(null);
 
   const [editVarId, setEditVarId] = React.useState<string | null>(null);
   const [editVarEntryName, setEditVarEntryName] = React.useState("");
@@ -319,7 +353,9 @@ export function NodeTopologyDialogBody({
   const [editVarExitId, setEditVarExitId] = React.useState<string>(DEFAULT_EXIT_SENTINEL);
   const [editVarRenameGroup, setEditVarRenameGroup] = React.useState(false);
   const [editVarProtocols, setEditVarProtocols] = React.useState<ProtocolKind[] | null>(null);
-  const [notifyTarget, setNotifyTarget] = React.useState<NotifyKeyUpdateTarget | null>(null);
+  const [internalNotifyTarget, setInternalNotifyTarget] =
+    React.useState<NotifyKeyUpdateTarget | null>(null);
+  const openNotify = onOpenNotify ?? setInternalNotifyTarget;
 
   React.useEffect(() => {
     setBlockSmtp(node.egressBlockSmtp ?? true);
@@ -328,6 +364,7 @@ export function NodeTopologyDialogBody({
     setSwapTarget(null);
     setEditExit(null);
     setEditVarId(null);
+    setEditVarProtocols(null);
     setNewExitIp("");
     setNewExitLabel("");
     setNewExitIface("");
@@ -342,6 +379,8 @@ export function NodeTopologyDialogBody({
     setVarEntryName(node.publicEndpoints?.[0]?.entryName || node.publicName || node.name);
     setVarCustomName("");
     setVarExitId(DEFAULT_EXIT_SENTINEL);
+    setVarProtocols(null);
+    setInternalNotifyTarget(null);
   }, [node.id]);
 
   const focusKind = initialFocus?.kind ?? null;
@@ -807,7 +846,7 @@ export function NodeTopologyDialogBody({
                             disabled={busy !== null}
                             title={t("notifyKeyUpdate.button")}
                             onClick={() =>
-                              setNotifyTarget({
+                              openNotify({
                                 title: exit.label ? `${exit.label} (${exit.ipv4})` : exit.ipv4,
                                 notifiedAt: exit.keyUpdateNotifiedAt ?? null,
                                 note: exit.keyUpdateNotifyNote ?? null,
@@ -1548,7 +1587,7 @@ export function NodeTopologyDialogBody({
                           disabled={busy !== null}
                           title={t("notifyKeyUpdate.button")}
                           onClick={() =>
-                            setNotifyTarget({
+                            openNotify({
                               title: ep.name,
                               notifiedAt: ep.keyUpdateNotifiedAt ?? null,
                               note: ep.keyUpdateNotifyNote ?? null,
@@ -1669,7 +1708,7 @@ export function NodeTopologyDialogBody({
                             <span>{t("egress.variantProtocolsInherit")}</span>
                           </label>
                           {editVarProtocols !== null ? (
-                            (["awg3", "awg2"] as const).map((proto) => {
+                            PROTOCOLS.map(({ value: proto, label }) => {
                               const checked = editVarProtocols.includes(proto);
                               return (
                                 <label key={proto} className="flex items-center gap-1.5">
@@ -1682,7 +1721,7 @@ export function NodeTopologyDialogBody({
                                       if (next.length > 0) setEditVarProtocols(next);
                                     }}
                                   />
-                                  <span className="font-mono uppercase">{proto}</span>
+                                  <span className="font-mono">{label}</span>
                                 </label>
                               );
                             })
@@ -1728,8 +1767,10 @@ export function NodeTopologyDialogBody({
                     entryName: varEntryName.trim() || undefined,
                     customName: varCustomName.trim() || null,
                     egressIpId: varExitId === DEFAULT_EXIT_SENTINEL ? null : varExitId,
+                    ...(varProtocols !== null ? { enabledProtocols: varProtocols } : {}),
                   });
                   setVarCustomName("");
+                  setVarProtocols(null);
                 });
               }}
             >
@@ -1783,6 +1824,37 @@ export function NodeTopologyDialogBody({
                   </Select>
                 </div>
               </div>
+              <div className="flex flex-wrap items-center gap-3 pt-0.5">
+                <span className="text-[11px] font-medium text-muted-foreground">
+                  {t("egress.variantProtocols")}:
+                </span>
+                <label className="flex items-center gap-1.5">
+                  <Checkbox
+                    checked={varProtocols === null}
+                    onChange={(e) => setVarProtocols(e.target.checked ? null : ["awg3"])}
+                  />
+                  <span>{t("egress.variantProtocolsInherit")}</span>
+                </label>
+                {varProtocols !== null
+                  ? PROTOCOLS.map(({ value: proto, label }) => {
+                      const checked = varProtocols.includes(proto);
+                      return (
+                        <label key={proto} className="flex items-center gap-1.5">
+                          <Checkbox
+                            checked={checked}
+                            onChange={(e) => {
+                              const next = e.target.checked
+                                ? [...varProtocols, proto]
+                                : varProtocols.filter((p) => p !== proto);
+                              if (next.length > 0) setVarProtocols(next);
+                            }}
+                          />
+                          <span className="font-mono">{label}</span>
+                        </label>
+                      );
+                    })
+                  : null}
+              </div>
               {quickPickIps.length > 0 ? (
                 <div className="flex flex-wrap items-center gap-1 pt-0.5">
                   <span className="text-[11px] text-muted-foreground">{t("egress.pickHostIp")}</span>
@@ -1808,11 +1880,13 @@ export function NodeTopologyDialogBody({
               </Button>
             </form>
           </section>
-          <NotifyKeyUpdateDialog
-            target={notifyTarget}
-            onClose={() => setNotifyTarget(null)}
-            onDone={reload}
-          />
+          {!onOpenNotify ? (
+            <NotifyKeyUpdateDialog
+              target={internalNotifyTarget}
+              onClose={() => setInternalNotifyTarget(null)}
+              onDone={reload}
+            />
+          ) : null}
         </div>
   );
 }

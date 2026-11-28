@@ -1,5 +1,5 @@
 import { createHash } from "node:crypto";
-import { readdirSync, readFileSync } from "node:fs";
+import { closeSync, constants, fstatSync, lstatSync, openSync, readdirSync, readSync } from "node:fs";
 import { request as httpRequest } from "node:http";
 import { join } from "node:path";
 
@@ -9,6 +9,7 @@ export const DEFAULT_WYTUNNEL_RUN_DIR = "/run/amnezia-wytunnel";
 export const DEFAULT_WYTUNNEL_TIMEOUT_MS = 1000;
 const SOCKET_RE = /^client-([0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12})\.sock$/;
 const MAX_RESPONSE_BYTES = 64 * 1024;
+const MAX_META_BYTES = 4096;
 
 type RawMeta = {
   remotePort?: unknown;
@@ -41,8 +42,16 @@ const nonNegNum = (v: unknown): number | undefined =>
   typeof v === "number" && Number.isFinite(v) && v >= 0 ? v : undefined;
 
 const readMeta = (runDir: string, routeId: string): { remotePort: number | null; startedAt: string | null } => {
+  let fd: number | null = null;
   try {
-    const raw = JSON.parse(readFileSync(join(runDir, `client-${routeId}.meta.json`), "utf8")) as RawMeta;
+    fd = openSync(join(runDir, `client-${routeId}.meta.json`), constants.O_RDONLY | constants.O_NOFOLLOW);
+    const st = fstatSync(fd);
+    if (!st.isFile() || st.size <= 0 || st.size > MAX_META_BYTES) {
+      return { remotePort: null, startedAt: null };
+    }
+    const buf = Buffer.alloc(st.size);
+    const n = readSync(fd, buf, 0, st.size, 0);
+    const raw = JSON.parse(buf.subarray(0, n).toString("utf8")) as RawMeta;
     const remotePort =
       typeof raw.remotePort === "number" && Number.isInteger(raw.remotePort) && raw.remotePort >= 1 && raw.remotePort <= 65535
         ? raw.remotePort
@@ -51,18 +60,27 @@ const readMeta = (runDir: string, routeId: string): { remotePort: number | null;
     return { remotePort, startedAt };
   } catch {
     return { remotePort: null, startedAt: null };
+  } finally {
+    if (fd !== null) {
+      try {
+        closeSync(fd);
+      } catch {
+        // Ignore close error on read-only metadata fd.
+      }
+    }
   }
 };
 
 const queryUnixSocketJson = (socketPath: string, timeoutMs: number): Promise<RawMetrics> =>
   new Promise((resolve, reject) => {
+    const signal = AbortSignal.timeout(timeoutMs);
     const req = httpRequest(
       {
         socketPath,
         path: "/status",
         method: "GET",
         headers: { host: "localhost", accept: "application/json" },
-        timeout: timeoutMs,
+        signal,
       },
       (res) => {
         if (res.statusCode !== 200) {
@@ -127,25 +145,37 @@ const parseTelemetry = (raw: RawMetrics): WytunnelTelemetry => ({
 
 /**
  * Discovers local WyTunnel client status sockets (`client-<routeUuid>.sock`) in
- * `runDir`, queries each with a tight timeout, and returns normalized status
- * entries. Missing directories or stale sockets never throw.
+ * `runDir`, queries each with a bounded wall-clock timeout, and returns normalized
+ * status entries. Returns `undefined` when `runDir` does not exist (`ENOENT`/`ENOTDIR`)
+ * so unmounted/misconfigured hosts stay Unknown rather than marking routes offline.
  */
 export const readWytunnelInstances = async (
   runDir: string = DEFAULT_WYTUNNEL_RUN_DIR,
   timeoutMs: number = DEFAULT_WYTUNNEL_TIMEOUT_MS,
-): Promise<WytunnelInstanceStatus[]> => {
+): Promise<WytunnelInstanceStatus[] | undefined> => {
   let names: string[];
   try {
     names = readdirSync(runDir);
-  } catch {
-    return [];
+  } catch (err) {
+    const code = (err as NodeJS.ErrnoException)?.code;
+    if (code === "ENOENT" || code === "ENOTDIR") {
+      return undefined;
+    }
+    return undefined;
   }
 
   const routeSockets: Array<{ routeId: string; socketPath: string }> = [];
   for (const name of names) {
     const match = SOCKET_RE.exec(name);
     if (match?.[1]) {
-      routeSockets.push({ routeId: match[1], socketPath: join(runDir, name) });
+      const socketPath = join(runDir, name);
+      try {
+        if (lstatSync(socketPath).isSocket()) {
+          routeSockets.push({ routeId: match[1], socketPath });
+        }
+      } catch {
+        // Ignore transient unlinked sockets.
+      }
     }
   }
   routeSockets.sort((a, b) => a.routeId.localeCompare(b.routeId));
@@ -158,9 +188,11 @@ export const readWytunnelInstances = async (
         const telemetry = parseTelemetry(raw);
         const target = telemetry.targetStreams ?? 0;
         const healthy = telemetry.healthyStreams ?? 0;
-        // In pool mode, require at least one healthy FakeTCP tunnel connected to the node;
-        // in direct mode (target === 0), a responsive client process is online.
-        const online = telemetry.mode === "pool" || target > 0 ? healthy > 0 : true;
+        // Fail closed: require either an explicit healthy pool stream or an explicit direct mode response.
+        const online =
+          telemetry.mode === "pool" || target > 0
+            ? healthy > 0
+            : telemetry.mode === "direct";
         return {
           routeId,
           remotePort: meta.remotePort,

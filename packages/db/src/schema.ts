@@ -601,6 +601,10 @@ export const vpnBridgeRoutes = pgTable(
     uniqueIndex("vpn_bridge_routes_node_active_unique")
       .on(table.nodeId)
       .where(sql`${table.state} = 'active'`),
+    // Distinct WyTunnel routes landing on the same VPN node must use distinct TCP transport ports.
+    uniqueIndex("vpn_bridge_routes_node_wytunnel_port_unique")
+      .on(table.nodeId, table.transportPort)
+      .where(sql`${table.transport} = 'wytunnel' and ${table.transportPort} is not null`),
     check(
       "vpn_bridge_routes_transport_valid",
       sql`${table.transport} in ('frp_tcp', 'wytunnel')`,
@@ -769,6 +773,10 @@ export const nodeVpnEndpoints = pgTable(
     check("node_vpn_endpoints_variant_ordinal_positive", sql`${table.variantOrdinal} > 0`),
     check("node_vpn_endpoints_bridge_mode_valid", sql`${table.bridgeMode} in ('inherit', 'direct', 'bridge')`),
     check("node_vpn_endpoints_awg_mtu_range", sql`${table.awgMtu} between 1280 and 1420`),
+    check(
+      "node_vpn_endpoints_enabled_protocols_valid",
+      sql`${table.enabledProtocols} is null or (jsonb_typeof(${table.enabledProtocols}) = 'array' and jsonb_array_length(${table.enabledProtocols}) > 0)`,
+    ),
   ],
 );
 

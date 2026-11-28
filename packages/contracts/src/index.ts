@@ -3,6 +3,8 @@ import { keyBridgeModeSchema, publicIpv4Schema } from "./bridges.js";
 import { AWG_CONFIG_LEVELS, awgClientMtuSchema, awgGeneratorSettingsSchema } from "./awgGenerator.js";
 
 export const protocolKindSchema = z.enum(["awg2", "awg3"]);
+/** Whether keys of this protocol support multiple explicit Entry IPs / endpoint variants. */
+export const protocolSupportsEndpoints = (protocol: string): boolean => protocol === "awg3";
 export const keyStateSchema = z.enum([
   "provisioning",
   "active",
@@ -358,7 +360,7 @@ export const createKeyRequestSchema = z
         "vpnBridgeRouteId is required when bridgeMode is 'route' and must be omitted otherwise",
     },
   )
-  .refine((value) => !value.endpointId || value.protocol === "awg3", {
+  .refine((value) => !value.endpointId || protocolSupportsEndpoints(value.protocol), {
     path: ["endpointId"],
     message: "Address selection requires AWG 3.1",
   });

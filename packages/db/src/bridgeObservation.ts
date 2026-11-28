@@ -67,11 +67,16 @@ const trackManagementIncident = async (
     failingSince: prior.mgmtFailingSince,
     alertedAt: prior.mgmtAlertedAt,
   } : EMPTY_BRIDGE_INCIDENT;
-  const frpsExpected =
-    bridge.frpsEnabled && (outcome.kind !== "ok" || outcome.frpsEnabled !== false);
+  const frpsExpected = bridge.frpsEnabled;
+  const frpsDisabledMismatch =
+    bridge.frpsEnabled && outcome.kind === "ok" && outcome.frpsEnabled === false;
   const frpsHealthy = !frpsExpected || (outcome.kind === "ok" && outcome.frpsReachable);
   const healthy = outcome.kind === "ok" && frpsHealthy;
-  const detail = healthy ? null : outcome.errorCode ?? "FRPS_UNREACHABLE";
+  const detail = healthy
+    ? null
+    : frpsDisabledMismatch
+      ? "FRPS_DISABLED_UNEXPECTEDLY"
+      : (outcome.errorCode ?? "FRPS_UNREACHABLE");
   const status = healthy ? "ok" : "failed";
   const { state, notice } = advanceBridgeIncident(previous, status, startedAt, BRIDGE_POLL_FAIL_THRESHOLD);
   const values = {
@@ -229,7 +234,7 @@ export const applyBridgePollResult = async (
     return "written";
   }
 
-  const effectiveFrpsEnabled = bridge.frpsEnabled && outcome.frpsEnabled !== false;
+  const frpsDisabledMismatch = bridge.frpsEnabled && outcome.frpsEnabled === false;
   const summary = {
     managementStatus: "ok" as const,
     agentVersion: outcome.agentVersion,
@@ -254,6 +259,7 @@ export const applyBridgePollResult = async (
     .for("update");
   const byName = new Map(outcome.proxies.map((proxy) => [proxy.proxyId, proxy]));
   const unreadable = new Set(outcome.unreadableProxyIds);
+  const unreadableWytunnel = new Set(outcome.unreadableWytunnelRouteIds ?? []);
   const wytunnelByRoute =
     outcome.wytunnelInstances !== undefined
       ? new Map(outcome.wytunnelInstances.map((inst) => [inst.routeId, inst]))
@@ -261,14 +267,19 @@ export const applyBridgePollResult = async (
   let portMismatch = false;
   for (const route of routes) {
     if (route.transport === "wytunnel") {
-      // An older bridge-agent without wytunnel.v1 omits `wytunnel`; leave the
-      // route's observedAt behind the bridge poll so it reads Unknown.
-      if (wytunnelByRoute === null) {
+      // An older bridge-agent without wytunnel.v1 (or missing /run/amnezia-wytunnel)
+      // omits `wytunnel`, and malformed entries appear in unreadableWytunnel; leave
+      // observedAt behind the bridge poll so routes read Unknown instead of offline.
+      if (wytunnelByRoute === null || unreadableWytunnel.has(route.id)) {
         await interruptPendingRouteStreak(tx, write.bridgeId, route.id);
         continue;
       }
       const inst = wytunnelByRoute.get(route.id);
-      const online = inst !== undefined && inst.online;
+      if (inst && inst.remotePort !== null && inst.remotePort !== undefined && inst.remotePort !== route.publicUdpPort) {
+        portMismatch = true;
+      }
+      const online =
+        inst !== undefined && inst.online && inst.remotePort === route.publicUdpPort;
       const marker = online && inst ? inst.registrationMarker : null;
       const telemetry = inst?.telemetry ?? null;
       const markerChanged = marker !== route.observedRegistrationMarker;
@@ -358,11 +369,13 @@ export const applyBridgePollResult = async (
       .where(eq(vpnBridgeRoutes.id, route.id));
   }
   const lastErrorCode =
-    effectiveFrpsEnabled && !outcome.frpsReachable
-      ? (outcome.errorCode ?? "FRPS_UNREACHABLE")
-      : portMismatch
-        ? "ROUTE_PORT_MISMATCH"
-        : outcome.errorCode;
+    frpsDisabledMismatch
+      ? "FRPS_DISABLED_UNEXPECTEDLY"
+      : bridge.frpsEnabled && !outcome.frpsReachable
+        ? (outcome.errorCode ?? "FRPS_UNREACHABLE")
+        : portMismatch
+          ? "ROUTE_PORT_MISMATCH"
+          : outcome.errorCode;
   await tx
     .update(vpnBridges)
     .set({

@@ -4,6 +4,7 @@ import * as React from "react";
 import {
   Activity,
   ArrowUpDown,
+  BellRing,
   Boxes,
   Cpu,
   Download,
@@ -161,6 +162,7 @@ export type NodeCardProps = {
   onUpdateAgent: () => void;
   onSetCapacity: () => void;
   onOpenTopology: () => void;
+  onNotifyKeyUpdate?: () => void;
   onOpenBridge?: (bridgeId: string) => void;
   onSwitchDirect?: (revision: number) => void;
   /** Render inner body directly without an outer Card wrapper (for dialogs). */
@@ -177,6 +179,7 @@ export function NodeCard({
   onUpdateAgent,
   onSetCapacity,
   onOpenTopology,
+  onNotifyKeyUpdate,
   onOpenBridge,
   onSwitchDirect,
   route,
@@ -237,6 +240,11 @@ export function NodeCard({
                 t("nodes.stopped")
               )}
             </p>
+            {node.keyUpdateNotifiedAt ? (
+              <Badge variant="warning" className="mt-1 text-[10px]">
+                {t("notifyKeyUpdate.activeBadge")}
+              </Badge>
+            ) : null}
           </div>
         </div>
         <Tooltip>
@@ -671,6 +679,23 @@ export function NodeCard({
         <Button variant="secondary" size="sm" onClick={onEdit}>
           <Pencil className="h-4 w-4" /> {t("nodes.edit")}
         </Button>
+        {onNotifyKeyUpdate ? (
+          <Tooltip>
+            <TooltipTrigger asChild>
+              <Button
+                variant={node.keyUpdateNotifiedAt ? "outline" : "secondary"}
+                size="sm"
+                onClick={onNotifyKeyUpdate}
+                aria-label={t("notifyKeyUpdate.button")}
+              >
+                <BellRing
+                  className={cn("h-4 w-4", node.keyUpdateNotifiedAt && "text-warning")}
+                />
+              </Button>
+            </TooltipTrigger>
+            <TooltipContent>{t("notifyKeyUpdate.button")}</TooltipContent>
+          </Tooltip>
+        ) : null}
         <div className="ml-auto">
           <Tooltip>
             <TooltipTrigger asChild>

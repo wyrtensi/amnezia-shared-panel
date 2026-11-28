@@ -26,7 +26,8 @@ export type AgentContext = {
   now?: () => Date;
   sampleHostMetrics?: () => Promise<HostMetrics>;
   sampleFrpsTls?: () => Promise<FrpsTlsStatus>;
-  sampleWytunnel?: () => Promise<WytunnelInstanceStatus[]>;
+  sampleWytunnel?: () => Promise<WytunnelInstanceStatus[] | undefined>;
+  hasWytunnelRunDir?: () => boolean;
 };
 
 export const identity = (ctx: AgentContext): IdentityResponse => ({
@@ -36,7 +37,9 @@ export const identity = (ctx: AgentContext): IdentityResponse => ({
   capabilities: [
     STATUS_CAPABILITY,
     ...(ctx.update ? [UPDATE_CAPABILITY] : []),
-    ...(ctx.sampleWytunnel ? [WYTUNNEL_CAPABILITY] : []),
+    ...(ctx.sampleWytunnel && (ctx.hasWytunnelRunDir ? ctx.hasWytunnelRunDir() : true)
+      ? [WYTUNNEL_CAPABILITY]
+      : []),
   ],
 });
 

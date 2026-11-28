@@ -93,6 +93,7 @@ import {
   resetNoticesRequestSchema,
   nodeRunsCheck,
   nodeEndpointDefaultName,
+  protocolSupportsEndpoints,
   selectDefaultNodeEndpoint,
   isPurgeableKeyState,
   isIpv4Literal,
@@ -562,6 +563,63 @@ export const resolveKeyEgressInfo = (input: {
     dnsSecondary: matched ? matched.dnsSecondary : "1.0.0.1",
     mode,
   };
+};
+
+const endpointAllowsProtocol = (
+  ep: { enabledProtocols?: readonly ProtocolKind[] | null },
+  protocol: ProtocolKind,
+): boolean =>
+  !ep.enabledProtocols ||
+  ep.enabledProtocols.length === 0 ||
+  ep.enabledProtocols.includes(protocol);
+
+/**
+ * Resolve the effective entry endpoint and exit IP for a VPN key consistently
+ * across user views, node counters, and targeted update notifications.
+ * Protocols without endpoint support (e.g. AWG 2.0) never bind to AWG 3.1
+ * entry variants or routed exit IPs.
+ */
+export const resolveEffectiveKeyAttachment = <
+  TEndpoint extends {
+    id: string;
+    ordinal: number;
+    egressIpId?: string | null;
+    address?: string;
+    publicAddress?: string;
+  },
+  TEgress extends { id: string; ipv4: string },
+>(input: {
+  protocol: ProtocolKind;
+  endpointId: string | null;
+  endpointsById: ReadonlyMap<string, TEndpoint>;
+  primaryEndpoint: TEndpoint | undefined;
+  nodePublicIp: string | null;
+  nodeEgressMode: NodeEgressMode | null;
+  nodeEgressDefaultIpId: string | null;
+  nodeEgressIps: readonly TEgress[];
+}): { endpoint: TEndpoint | null; exitIp: TEgress | null } => {
+  if (!protocolSupportsEndpoints(input.protocol)) {
+    return {
+      endpoint: null,
+      exitIp: input.nodePublicIp
+        ? (input.nodeEgressIps.find((ip) => ip.ipv4 === input.nodePublicIp) ?? null)
+        : null,
+    };
+  }
+  const endpoint =
+    (input.endpointId ? input.endpointsById.get(input.endpointId) : undefined) ??
+    input.primaryEndpoint ??
+    null;
+  const endpointAddress = endpoint?.publicAddress ?? endpoint?.address ?? null;
+  const exitIp =
+    input.nodeEgressMode === "routed"
+      ? (input.nodeEgressIps.find(
+          (ip) => ip.id === (endpoint?.egressIpId ?? input.nodeEgressDefaultIpId),
+        ) ?? null)
+      : (input.nodeEgressIps.find(
+          (ip) => ip.ipv4 === (input.nodePublicIp ?? endpointAddress),
+        ) ?? null);
+  return { endpoint, exitIp };
 };
 
 const toPolicy = (row: PortalPolicyRow | undefined): PortalPolicy =>
@@ -1806,15 +1864,25 @@ export class PostgresControlRepository implements ControlRepository {
           : null;
         const allEndpoints = publicEndpoints.get(row.id) ?? [];
         const visibleEndpoints = allEndpoints
+          .map((endpoint) => {
+            const endpointSelectableProtocols =
+              endpoint.enabledProtocols && endpoint.enabledProtocols.length > 0
+                ? selectableProtocols.filter((proto) =>
+                    endpoint.enabledProtocols!.includes(proto),
+                  )
+                : selectableProtocols;
+            return { endpoint, endpointSelectableProtocols };
+          })
           .filter(
-            (endpoint) =>
+            ({ endpoint, endpointSelectableProtocols }) =>
               endpoint.enabled &&
-              (allowedEndpoints === null || allowedEndpoints.has(endpoint.id)),
+              (allowedEndpoints === null || allowedEndpoints.has(endpoint.id)) &&
+              endpointSelectableProtocols.length > 0,
           )
           .sort((a, b) => {
-            const ra = endpointRank.get(a.id) ?? Number.MAX_SAFE_INTEGER;
-            const rb = endpointRank.get(b.id) ?? Number.MAX_SAFE_INTEGER;
-            return ra - rb || a.ordinal - b.ordinal;
+            const ra = endpointRank.get(a.endpoint.id) ?? Number.MAX_SAFE_INTEGER;
+            const rb = endpointRank.get(b.endpoint.id) ?? Number.MAX_SAFE_INTEGER;
+            return ra - rb || a.endpoint.ordinal - b.endpoint.ordinal;
           });
         // If this node defines public endpoints and none are enabled & allowed
         // for this user, hide the node unless the node itself was explicitly
@@ -1833,14 +1901,16 @@ export class PostgresControlRepository implements ControlRepository {
         const hasActiveBridge = activeBridgeRouteId !== null;
         const endpoints = visibleEndpoints.map(
           ({
-            id,
-            ordinal,
-            name,
-            publicAddress,
-            bridgeMode,
-            egressIpId,
-            enabledProtocols: endpointEnabledProtocols,
-            reachability: endpointReachability,
+            endpoint: {
+              id,
+              ordinal,
+              name,
+              publicAddress,
+              bridgeMode,
+              egressIpId,
+              reachability: endpointReachability,
+            },
+            endpointSelectableProtocols,
           }) => {
             const usesBridgeForUser =
               hasActiveBridge &&
@@ -1868,10 +1938,6 @@ export class PostgresControlRepository implements ControlRepository {
                 ? pickChecks(checksByEgressIp.get(effectiveEgressIpId) ?? [])
                 : nodeChecks
               : undefined;
-            const endpointSelectableProtocols =
-              endpointEnabledProtocols && endpointEnabledProtocols.length > 0
-                ? selectableProtocols.filter((proto) => endpointEnabledProtocols.includes(proto))
-                : selectableProtocols;
             return {
               id,
               ordinal,
@@ -2235,8 +2301,20 @@ export class PostgresControlRepository implements ControlRepository {
         capabilities: nodes.capabilities,
       }).from(nodes).where(eq(nodes.id, nodeId));
       if (!node) throw new ApiError(404, "Node not found", "NODE_NOT_FOUND");
-      if (!deriveSupportedProtocols(node.protocol, node.capabilities).includes("awg3")) {
+      const nodeSupportedProtocols = deriveSupportedProtocols(node.protocol, node.capabilities);
+      if (!nodeSupportedProtocols.includes("awg3")) {
         throw new ApiError(409, "Additional addresses require AWG 3.1", "NODE_ENDPOINT_NOT_AWG3");
+      }
+      if (
+        request.enabledProtocols !== undefined &&
+        request.enabledProtocols !== null &&
+        !request.enabledProtocols.some((p) => nodeSupportedProtocols.includes(p))
+      ) {
+        throw new ApiError(
+          400,
+          "Endpoint enabledProtocols must include at least one protocol supported by the node",
+          "VALIDATION_ERROR",
+        );
       }
       if (request.egressIpId) {
         const [egressIp] = await tx
@@ -2387,6 +2465,21 @@ export class PostgresControlRepository implements ControlRepository {
       const match = and(eq(nodeVpnEndpoints.nodeId, nodeId), eq(nodeVpnEndpoints.id, request.id));
       const [current] = await tx.select().from(nodeVpnEndpoints).where(match);
       if (!current) throw new ApiError(404, "Address not found on this node", "NODE_ENDPOINT_NOT_FOUND");
+      if (request.enabledProtocols !== undefined && request.enabledProtocols !== null) {
+        const [node] = await tx
+          .select({ protocol: nodes.protocol, capabilities: nodes.capabilities })
+          .from(nodes)
+          .where(eq(nodes.id, nodeId));
+        if (!node) throw new ApiError(404, "Node not found", "NODE_NOT_FOUND");
+        const nodeSupportedProtocols = deriveSupportedProtocols(node.protocol, node.capabilities);
+        if (!request.enabledProtocols.some((p) => nodeSupportedProtocols.includes(p))) {
+          throw new ApiError(
+            400,
+            "Endpoint enabledProtocols must include at least one protocol supported by the node",
+            "VALIDATION_ERROR",
+          );
+        }
+      }
       const siblingsOnAddress = await tx
         .select()
         .from(nodeVpnEndpoints)
@@ -2547,6 +2640,7 @@ export class PostgresControlRepository implements ControlRepository {
         bridgeMode: row.bridgeMode,
         generatorChanged: request.action === "update" && request.awgGenerator !== undefined,
         awgMtu: row.awgMtu,
+        enabledProtocols: row.enabledProtocols ?? null,
         ...(request.action === "update" && request.awgDeviceRules !== undefined
           ? { deviceRules: Object.keys(row.awgDeviceRules ?? {}) }
           : {}),
@@ -3080,9 +3174,34 @@ export class PostgresControlRepository implements ControlRepository {
               tx,
             )
           : null;
+      type PublicEndpointRecord =
+        typeof publicEndpoints extends Map<string, Array<infer U>> ? U : never;
+      const emptyEndpointsById = new Map<string, PublicEndpointRecord>();
+      const endpointLookupByNode = new Map<
+        string,
+        {
+          byId: Map<string, PublicEndpointRecord>;
+          primary: PublicEndpointRecord | undefined;
+        }
+      >();
+      for (const [nId, eps] of publicEndpoints) {
+        const byId = new Map(eps.map((ep) => [ep.id, ep]));
+        const primary = eps.find((ep) => ep.ordinal === 1) ?? eps[0];
+        endpointLookupByNode.set(nId, { byId, primary });
+      }
       return rows.map(({ key, node, current }) => {
-        const endpoint = (publicEndpoints.get(key.nodeId) ?? []).find((item) =>
-          key.endpointId ? item.id === key.endpointId : item.ordinal === 1);
+        const nodeEgressList = egressIpsByNode.get(key.nodeId) ?? [];
+        const epLookup = endpointLookupByNode.get(key.nodeId);
+        const { endpoint, exitIp: resolvedExit } = resolveEffectiveKeyAttachment({
+          protocol: key.protocol,
+          endpointId: key.endpointId,
+          endpointsById: epLookup?.byId ?? emptyEndpointsById,
+          primaryEndpoint: epLookup?.primary,
+          nodePublicIp: node.publicIp,
+          nodeEgressMode: node.egressMode,
+          nodeEgressDefaultIpId: node.egressDefaultIpId,
+          nodeEgressIps: nodeEgressList,
+        });
         const bridge = bridgeRoutes
           ? resolveKeyBridgeInfo({
               protocol: key.protocol,
@@ -3104,7 +3223,7 @@ export class PostgresControlRepository implements ControlRepository {
         // the address's verdict; a key that goes through the bridge where the
         // address was measured direct reads the node's bridge path row; one
         // that goes direct where only the bridge was measured reads unknown.
-        const addressMeasuredBridged = endpoint !== undefined &&
+        const addressMeasuredBridged = endpoint !== null &&
           (bridgeRoutes?.activeByNode.has(key.nodeId) ?? false) &&
           (endpoint.bridgeMode === "bridge" ||
             (endpoint.bridgeMode === "inherit" && (globalPolicy?.useBridge ?? false)));
@@ -3119,19 +3238,12 @@ export class PostgresControlRepository implements ControlRepository {
             : key.protocol === "awg3" && bridgeRoutes?.activeByNode.has(key.nodeId)
               ? UNKNOWN_USER_REACHABILITY
               : reachability?.(key.nodeId, key.protocol);
-        const nodeEgressList = egressIpsByNode.get(key.nodeId) ?? [];
         const endpointEgress = endpoint?.egressIpId
           ? (nodeEgressList.find((ip) => ip.id === endpoint.egressIpId) ?? null)
           : null;
         const defaultEgress = node.egressDefaultIpId
           ? (nodeEgressList.find((ip) => ip.id === node.egressDefaultIpId) ?? null)
           : null;
-        const resolvedExit =
-          node.egressMode === "routed"
-            ? (endpointEgress ?? defaultEgress)
-            : (nodeEgressList.find(
-                (ip) => ip.ipv4 === (endpoint?.publicAddress ?? node.publicIp),
-              ) ?? null);
         const egress: KeyEgressInfo | undefined =
           actor.role === "admin" && key.ownerId === actor.id
             ? resolveKeyEgressInfo({
@@ -3387,6 +3499,7 @@ export class PostgresControlRepository implements ControlRepository {
                   nodeId: nodeVpnEndpoints.nodeId,
                   ordinal: nodeVpnEndpoints.ordinal,
                   enabled: nodeVpnEndpoints.enabled,
+                  enabledProtocols: nodeVpnEndpoints.enabledProtocols,
                 })
                 .from(nodeVpnEndpoints)
                 .where(
@@ -3398,7 +3511,12 @@ export class PostgresControlRepository implements ControlRepository {
             : [];
         const candidateEndpointsByNode = new Map<
           string,
-          Array<{ id: string; ordinal: number; enabled: boolean }>
+          Array<{
+            id: string;
+            ordinal: number;
+            enabled: boolean;
+            enabledProtocols: ProtocolKind[] | null;
+          }>
         >();
         for (const ep of candidateEndpointRows) {
           const list = candidateEndpointsByNode.get(ep.nodeId) ?? [];
@@ -3441,19 +3559,30 @@ export class PostgresControlRepository implements ControlRepository {
             continue;
           }
           const candidateEndpoints = candidateEndpointsByNode.get(candidate.id) ?? [];
+          const availableEndpoints = candidateEndpoints.filter(
+            (ep) =>
+              ep.enabled &&
+              (allowedEndpointSet === null || allowedEndpointSet.has(ep.id)),
+          );
           if (
             (candidateEndpoints.length === 0 &&
               allowedEndpointSet !== null &&
               !allowedEndpointSet.has(candidate.id)) ||
             (request.protocol === "awg3" &&
               candidateEndpoints.length > 0 &&
-              !candidateEndpoints.some(
-                (ep) =>
-                  ep.enabled &&
-                  (allowedEndpointSet === null || allowedEndpointSet.has(ep.id)),
-              ))
+              availableEndpoints.length === 0)
           ) {
             availabilityBlocked = true;
+            continue;
+          }
+          if (
+            request.protocol === "awg3" &&
+            candidateEndpoints.length > 0 &&
+            !availableEndpoints.some((ep) =>
+              endpointAllowsProtocol(ep, request.protocol),
+            )
+          ) {
+            protocolBlocked = true;
             continue;
           }
           // The chosen protocol must be enabled on THIS node and permitted by
@@ -3556,11 +3685,7 @@ export class PostgresControlRepository implements ControlRepository {
           if (allowedEndpointSet !== null && !allowedEndpointSet.has(endpoint.id)) {
             throw new ApiError(403, "Selected address is not permitted", "NODE_NOT_ALLOWED");
           }
-          if (
-            endpoint.enabledProtocols &&
-            endpoint.enabledProtocols.length > 0 &&
-            !endpoint.enabledProtocols.includes(request.protocol)
-          ) {
+          if (!endpointAllowsProtocol(endpoint, request.protocol)) {
             throw new ApiError(
               403,
               "Selected protocol is not permitted on this address",
@@ -3570,7 +3695,9 @@ export class PostgresControlRepository implements ControlRepository {
           endpointId = endpoint.id;
         } else if (request.protocol === "awg3") {
           const preferred = selectDefaultNodeEndpoint(
-            candidateEndpointsByNode.get(selectedNode.id) ?? [],
+            (candidateEndpointsByNode.get(selectedNode.id) ?? []).filter((ep) =>
+              endpointAllowsProtocol(ep, request.protocol),
+            ),
             endpointOrder,
             allowedEndpointSet,
           );
@@ -4745,7 +4872,7 @@ export class PostgresControlRepository implements ControlRepository {
         .from(nodes),
       db
         .select({
-          online: sql<number>`count(*) filter (where ${peerCurrent.online})`,
+          online: sql<number>`count(*) filter (where ${peerCurrent.online} and ${vpnKeys.state} = 'active')`,
           received: sum(peerCurrent.receivedBytes),
           sent: sum(peerCurrent.sentBytes),
         })
@@ -5016,25 +5143,22 @@ export class PostgresControlRepository implements ControlRepository {
     const onlineByEgressIp = new Map<string, ProtoBucket>();
     for (const peer of onlinePeerRows) {
       bumpBucket(onlineByNode, peer.nodeId, peer.protocol);
-      const ep =
-        (peer.endpointId ? endpointById.get(peer.endpointId) : undefined) ??
-        primaryEndpointByNode.get(peer.nodeId);
+      const nodeRow = nodeById.get(peer.nodeId);
+      const { endpoint: ep, exitIp } = resolveEffectiveKeyAttachment({
+        protocol: peer.protocol,
+        endpointId: peer.endpointId,
+        endpointsById: endpointById,
+        primaryEndpoint: primaryEndpointByNode.get(peer.nodeId),
+        nodePublicIp: nodeRow?.publicIp ?? null,
+        nodeEgressMode: nodeRow?.egressMode ?? null,
+        nodeEgressDefaultIpId: nodeRow?.egressDefaultIpId ?? null,
+        nodeEgressIps: egressIpsByNode.get(peer.nodeId) ?? [],
+      });
       if (ep) {
         bumpBucket(onlineByEndpoint, ep.id, peer.protocol);
       }
-      const nodeRow = nodeById.get(peer.nodeId);
-      if (nodeRow) {
-        const nodeEgress = egressIpsByNode.get(peer.nodeId) ?? [];
-        const exitIp =
-          nodeRow.egressMode === "routed"
-            ? (nodeEgress.find((ip) => ip.id === (ep?.egressIpId ?? nodeRow.egressDefaultIpId)) ??
-              null)
-            : (nodeEgress.find(
-                (ip) => ip.ipv4 === (ep?.publicAddress ?? nodeRow.publicIp),
-              ) ?? null);
-        if (exitIp) {
-          bumpBucket(onlineByEgressIp, exitIp.id, peer.protocol);
-        }
+      if (exitIp) {
+        bumpBucket(onlineByEgressIp, exitIp.id, peer.protocol);
       }
     }
     const assignedByEndpoint = new Map<string, number>();
@@ -8666,6 +8790,9 @@ export class PostgresControlRepository implements ControlRepository {
           id: nodeVpnEndpoints.id,
           nodeId: nodeVpnEndpoints.nodeId,
           enabled: nodeVpnEndpoints.enabled,
+          enabledProtocols: nodeVpnEndpoints.enabledProtocols,
+          address: nodeVpnEndpoints.address,
+          egressIpId: nodeVpnEndpoints.egressIpId,
         })
         .from(nodeVpnEndpoints)
         .where(eq(nodeVpnEndpoints.id, request.endpointId))
@@ -8687,10 +8814,38 @@ export class PostgresControlRepository implements ControlRepository {
           "NODE_ENDPOINT_UNAVAILABLE",
         );
       }
+      if (!endpointAllowsProtocol(targetEndpoint, key.protocol)) {
+        throw new ApiError(
+          403,
+          "Selected protocol is not permitted on this address",
+          "PROTOCOL_NOT_ALLOWED",
+        );
+      }
       if (key.endpointId !== request.endpointId) {
+        const [previousEndpoint] = await tx
+          .select({
+            id: nodeVpnEndpoints.id,
+            address: nodeVpnEndpoints.address,
+            egressIpId: nodeVpnEndpoints.egressIpId,
+          })
+          .from(nodeVpnEndpoints)
+          .where(
+            key.endpointId
+              ? eq(nodeVpnEndpoints.id, key.endpointId)
+              : and(eq(nodeVpnEndpoints.nodeId, key.nodeId), eq(nodeVpnEndpoints.ordinal, 1)),
+          )
+          .limit(1);
+        const endpointTransportChanged =
+          !previousEndpoint ||
+          previousEndpoint.address !== targetEndpoint.address ||
+          (previousEndpoint.egressIpId ?? null) !== (targetEndpoint.egressIpId ?? null);
         await tx
           .update(vpnKeys)
-          .set({ endpointId: request.endpointId, updatedAt: new Date() })
+          .set({
+            endpointId: request.endpointId,
+            ...(endpointTransportChanged ? { configDeliveredAt: null } : {}),
+            updatedAt: new Date(),
+          })
           .where(eq(vpnKeys.id, key.id));
         await this.enqueueNodeSyncEgress(tx, key.nodeId);
         await tx.insert(auditEvents).values({
@@ -8828,7 +8983,10 @@ export class PostgresControlRepository implements ControlRepository {
           .from(nodeVpnEndpoints)
           .where(eq(nodeVpnEndpoints.nodeId, nodeId)),
         tx
-          .select({ endpointId: vpnKeys.endpointId })
+          .select({
+            endpointId: vpnKeys.endpointId,
+            protocol: vpnKeys.protocol,
+          })
           .from(vpnKeys)
           .innerJoin(users, eq(users.id, vpnKeys.ownerId))
           .where(
@@ -8843,12 +9001,17 @@ export class PostgresControlRepository implements ControlRepository {
       const primaryEp = endpoints.find((ep) => ep.ordinal === 1) ?? endpoints[0];
       let affectedActiveKeys = 0;
       for (const k of activeKeys) {
-        const ep = (k.endpointId ? epById.get(k.endpointId) : undefined) ?? primaryEp;
-        const matches =
-          node.egressMode === "routed"
-            ? (ep?.egressIpId ?? node.egressDefaultIpId) === ipId
-            : (ep?.address ?? node.publicIp) === exitIp.ipv4;
-        if (matches) affectedActiveKeys += 1;
+        const { exitIp: resolved } = resolveEffectiveKeyAttachment({
+          protocol: k.protocol,
+          endpointId: k.endpointId,
+          endpointsById: epById,
+          primaryEndpoint: primaryEp,
+          nodePublicIp: node.publicIp,
+          nodeEgressMode: node.egressMode,
+          nodeEgressDefaultIpId: node.egressDefaultIpId,
+          nodeEgressIps: [exitIp],
+        });
+        if (resolved?.id === ipId) affectedActiveKeys += 1;
       }
       await tx.insert(auditEvents).values({
         actorUserId: actor.id,
@@ -8924,6 +9087,7 @@ export class PostgresControlRepository implements ControlRepository {
           and(
             eq(vpnKeys.nodeId, nodeId),
             eq(vpnKeys.state, "active"),
+            eq(vpnKeys.protocol, "awg3"),
             eq(users.serviceAccount, false),
             endpoint.ordinal === 1
               ? or(eq(vpnKeys.endpointId, endpointId), isNull(vpnKeys.endpointId))

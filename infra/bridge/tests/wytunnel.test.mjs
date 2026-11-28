@@ -32,11 +32,25 @@ test("install-wytunnel-bridge.sh dry-run derives slot, pool, rotation, and disab
   assert.match(out, /disable_frps\s*=\s*1/);
 });
 
-test("install-wytunnel-bridge.sh rejects invalid route UUID", () => {
+test("install-wytunnel-bridge.sh rejects invalid route UUID, out-of-range IP octets, and bad SHA-256", () => {
   assert.throws(() =>
     execFileSync("bash", [bridgeScript, "--route-id", "not-a-uuid", "--dry-run"], {
       stdio: "pipe",
     }),
+  );
+  assert.throws(() =>
+    execFileSync(
+      "bash",
+      [bridgeScript, "--route-id", ROUTE_ID, "--node-ip", "999.0.0.1", "--remote-port", "41004", "--dry-run"],
+      { stdio: "pipe" },
+    ),
+  );
+  assert.throws(() =>
+    execFileSync(
+      "bash",
+      [bridgeScript, "--route-id", ROUTE_ID, "--node-ip", "198.51.100.20", "--remote-port", "41004", "--sha256", "not-hex", "--dry-run"],
+      { stdio: "pipe" },
+    ),
   );
 });
 

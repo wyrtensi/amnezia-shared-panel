@@ -85,6 +85,22 @@ case "$1" in
     grep -qxF "$image" "$FAKE/images" 2>/dev/null || echo "$image" >>"$FAKE/images"
     echo "$image" >"$FAKE/running"
     exit 0 ;;
+  create)
+    cname="$3"; ref="$4"
+    printf '%s' "$ref" >"$FAKE/cname-$cname"
+    exit 0 ;;
+  cp)
+    src="$2"; dest="$3"
+    cname="\${src%%:*}"; p="\${src#*:}"
+    ref="$(cat "$FAKE/cname-$cname" 2>/dev/null || true)"
+    hex_ref="$(hex "$ref")"
+    if [ -f "$FAKE/bundle-\${hex_ref}\${p}" ]; then
+      cp "$FAKE/bundle-\${hex_ref}\${p}" "$dest"
+      exit 0
+    fi
+    exit 1 ;;
+  container)
+    exit 0 ;;
 esac
 exit 0
 `;
@@ -107,7 +123,12 @@ case "\${!#}" in
     caps='"status.v1","update.v1"'
     if listed "$image" "\${FAKE_NO_UPDATE_CAP:-}"; then caps='"status.v1"'; fi
     printf '{"bridgeId":"%s","agentVersion":"0.2.0","apiVersion":1,"capabilities":[%s]}' "$bridge" "$caps" ;;
-  */v1/status) printf '{"bridgeId":"%s","agentVersion":"0.2.0","apiVersion":1,"observedAt":"t","frps":{"reachable":%s,"version":"0.72.0"},"applied":{},"proxies":[],"errors":[]}' "$bridge" "$reachable" ;;
+  */v1/status)
+    if listed "$image" "\${FAKE_FRPS_DISABLED:-}"; then
+      printf '{"bridgeId":"%s","agentVersion":"0.2.0","apiVersion":1,"observedAt":"t","frps":{"enabled":false,"reachable":false,"version":null},"applied":{},"proxies":[],"errors":[]}' "$bridge"
+    else
+      printf '{"bridgeId":"%s","agentVersion":"0.2.0","apiVersion":1,"observedAt":"t","frps":{"enabled":true,"reachable":%s,"version":"0.72.0"},"applied":{},"proxies":[],"errors":[]}' "$bridge" "$reachable"
+    fi ;;
   *) exit 22 ;;
 esac
 `;
@@ -229,7 +250,9 @@ const assertInvariants = async (h, run) => {
   assert.deepEqual(await h.lines("systemctl.log"), [], "the updater never calls systemctl (frps is never restarted)");
   for (const call of await h.lines("docker.log")) {
     assert.doesNotMatch(call, /frps/, call);
-    assert.doesNotMatch(call, /\b(rmi|rm|prune)\b/, `no image or container is removed: ${call}`);
+    if (!/^container rm -f amnezia-bridge-update-extract-/.test(call)) {
+      assert.doesNotMatch(call, /\b(rmi|rm|prune)\b/, `no image or service container is removed: ${call}`);
+    }
     if (call.startsWith("compose")) {
       assert.match(call, /--project-name amnezia-bridge-agent .* up --detach --no-deps --no-build bridge-agent$/, call);
     }
@@ -271,7 +294,7 @@ test("only the bridge-agent service is ever recreated, never frps, and no image 
   assert.ok(ups.length >= 1);
   for (const line of ups) assert.match(line, /--no-deps --no-build "\$AGENT_SERVICE"/, line);
   assert.match(script, /^AGENT_SERVICE=bridge-agent$/m);
-  assert.doesNotMatch(script, /systemctl|frps\.service|docker (image )?(rm|rmi|prune)|docker\.sock/);
+  assert.doesNotMatch(script, /systemctl|frps\.service|docker (image )?(rm|rmi|prune)|docker rm\b|docker\.sock/);
 });
 
 test("the approved repository comes from the unit, never from the pin or the request", async () => {
@@ -773,5 +796,41 @@ withHost("an unreadable clock never starts an operation", async (h) => {
   const run = h.run();
   assert.equal((await h.result()).state, "expired");
   assert.deepEqual(await h.lines("docker.log"), []);
+  await assertInvariants(h, run);
+});
+
+withHost("WyTunnel-only bridge (BRIDGE_FRPS_ENABLED=false) passes health gate on upgrade and rollback", async (h) => {
+  await writeFile(join(h.agentDir, "agent.env"), `${AGENT_ENV(OLD_IMAGE)}BRIDGE_FRPS_ENABLED=false\n`, { mode: 0o600 });
+  await h.request();
+  const okRun = h.run({ FAKE_FRPS_DISABLED: `${OLD_HEX} ${NEW_HEX}` });
+  assert.equal(okRun.status, 0, okRun.stderr);
+  assert.equal((await h.result()).state, "succeeded");
+  await assertInvariants(h, okRun);
+
+  await h.request({ imageDigest: `sha256:${"3".repeat(64)}` }, OP2);
+  const rbRun = h.run({ FAKE_FRPS_DISABLED: `${NEW_HEX}`, FAKE_BROKEN: "3".repeat(64) });
+  assert.equal(rbRun.status, 0, rbRun.stderr);
+  assert.equal((await h.result(OP2)).state, "rolled_back");
+  await assertInvariants(h, rbRun);
+});
+
+withHost("reconciles unmodified compose.yaml and helper scripts from candidate bundle", async (h) => {
+  const bundleOld = join(h.fake, `bundle-${OLD_HEX}`, "opt", "amnezia-bridge-bundle");
+  const bundleNew = join(h.fake, `bundle-${NEW_HEX}`, "opt", "amnezia-bridge-bundle");
+  await mkdir(join(bundleOld, "scripts"), { recursive: true });
+  await mkdir(join(bundleNew, "scripts"), { recursive: true });
+  await writeFile(join(bundleOld, "compose.yaml"), "services:\n  bridge-agent: {}\n");
+  await writeFile(join(bundleNew, "compose.yaml"), "services:\n  bridge-agent:\n    environment:\n      BRIDGE_FRPS_ENABLED: ${BRIDGE_FRPS_ENABLED:-true}\n");
+  await writeFile(join(bundleOld, "scripts", "toggle-frps.sh"), "#!/usr/bin/env bash\necho old\n");
+  await writeFile(join(bundleNew, "scripts", "toggle-frps.sh"), "#!/usr/bin/env bash\necho new\n");
+  await mkdir(join(h.root, "opt", "scripts"), { recursive: true });
+  await writeFile(join(h.root, "opt", "scripts", "toggle-frps.sh"), "#!/usr/bin/env bash\necho old\n");
+
+  await h.request();
+  const run = h.run();
+  assert.equal(run.status, 0, run.stderr);
+  assert.equal((await h.result()).state, "succeeded");
+  assert.match(await readFile(join(h.root, "opt", "compose.yaml"), "utf8"), /BRIDGE_FRPS_ENABLED/);
+  assert.match(await readFile(join(h.root, "opt", "scripts", "toggle-frps.sh"), "utf8"), /echo new/);
   await assertInvariants(h, run);
 });

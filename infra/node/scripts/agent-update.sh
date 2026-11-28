@@ -337,7 +337,7 @@ is_known_stock_script() {
 
 is_bash_script() {
   case "$1" in
-    scripts/agent-update.sh|scripts/capacity-apply.sh|scripts/install-agent-updater.sh|scripts/install-capacity-applier.sh)
+    scripts/agent-update.sh|scripts/capacity-apply.sh|scripts/install-agent-updater.sh|scripts/install-capacity-applier.sh|scripts/install-wytunnel-node.sh)
       return 0 ;;
     *)
       return 1 ;;
@@ -363,6 +363,7 @@ MANAGED_SCRIPTS=(
   scripts/install-capacity-applier.sh
   scripts/install-egressd.sh
   scripts/install-host-services.sh
+  scripts/install-wytunnel-node.sh
   scripts/set-capacity.sh
   scripts/switch-egress-mode.sh
   scripts/common.sh

@@ -24,6 +24,7 @@ import type {
 } from "@amnezia/contracts";
 import type { AdminNode } from "@/components/admin/admin-data";
 import type { NodeRouteLabel } from "@/components/admin/use-bridge-infra";
+import { PROTOCOLS } from "@/components/protocol-select";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
@@ -729,6 +730,24 @@ export function buildFleetTopologyGraph({
       orderedNodeExits.push(exitItem);
     }
 
+    const mergeExitOnlineStats = (
+      target: Omit<ExitGraphNode, "row" | "xLeft" | "xRight" | "y">,
+      peerCount: number,
+      byProto?: Record<string, number>,
+    ) => {
+      target.onlinePeerCount += peerCount;
+      if (!byProto) return;
+      const merged = { ...(target.onlineByProtocol ?? {}) };
+      for (const [proto, count] of Object.entries(byProto)) {
+        if (typeof count === "number" && count > 0) {
+          merged[proto] = (merged[proto] ?? 0) + count;
+        }
+      }
+      if (Object.keys(merged).length > 0) {
+        target.onlineByProtocol = merged;
+      }
+    };
+
     const ensureImplicitExit = (
       ipv4: string,
     ): Omit<ExitGraphNode, "row" | "xLeft" | "xRight" | "y"> => {
@@ -765,9 +784,8 @@ export function buildFleetTopologyGraph({
         hostState: implicitHostState,
         failingChecks: dedupedChecks,
         incomingVariantCount: 0,
-        onlinePeerCount: nodeEgressIps.length === 0 ? (node.onlinePeerCount ?? 0) : 0,
-        onlineByProtocol:
-          nodeEgressIps.length === 0 ? node.onlineByProtocol : undefined,
+        onlinePeerCount: 0,
+        onlineByProtocol: undefined,
         hasKeyUpdateNotice: false,
         isSynthetic: true,
         health: resolveExitHealth(
@@ -860,12 +878,14 @@ export function buildFleetTopologyGraph({
         let targetExit:
           | Omit<ExitGraphNode, "row" | "xLeft" | "xRight" | "y">
           | undefined =
-          (ep.egressIpId ? nodeExitById.get(ep.egressIpId) : undefined) ??
+          (node.egressMode === "routed" && ep.egressIpId
+            ? nodeExitById.get(ep.egressIpId)
+            : undefined) ??
           (ep.effectiveEgressIp
             ? nodeExitByIp.get(ep.effectiveEgressIp)
             : undefined);
 
-        if (!targetExit && node.egressDefaultIpId) {
+        if (!targetExit && node.egressMode === "routed" && node.egressDefaultIpId) {
           targetExit = nodeExitById.get(node.egressDefaultIpId);
         }
         if (!targetExit) {
@@ -880,6 +900,9 @@ export function buildFleetTopologyGraph({
             node.publicHost ??
             ep.publicAddress;
           targetExit = nodeExitByIp.get(fallbackIp) ?? ensureImplicitExit(fallbackIp);
+        }
+        if (targetExit.isSynthetic) {
+          mergeExitOnlineStats(targetExit, ep.onlinePeerCount ?? 0, ep.onlineByProtocol);
         }
 
         const entryExitHealth: TopologyHealth =
@@ -949,11 +972,14 @@ export function buildFleetTopologyGraph({
       });
 
       const targetExit =
-        (node.egressDefaultIpId
+        (node.egressMode === "routed" && node.egressDefaultIpId
           ? nodeExitById.get(node.egressDefaultIpId)
           : undefined) ??
         orderedNodeExits[0] ??
         ensureImplicitExit(addr);
+      if (targetExit.isSynthetic) {
+        mergeExitOnlineStats(targetExit, node.onlinePeerCount ?? 0, node.onlineByProtocol);
+      }
 
       pendingEdges.push({
         id: `${entryGraphId}->${targetExit.id}`,
@@ -1811,10 +1837,9 @@ export function FleetTopologyMap({
   );
 }
 
-const PROTOCOL_DISPLAY_LABEL: Record<string, string> = {
-  awg3: "AWG 3.1",
-  awg2: "AWG 2.0",
-};
+const PROTOCOL_DISPLAY_LABEL: Record<string, string> = Object.fromEntries(
+  PROTOCOLS.map((p) => [p.value, p.label]),
+);
 
 function formatProtocolBreakdown(onlineByProtocol?: Record<string, number>): string | null {
   if (!onlineByProtocol) return null;
@@ -1855,7 +1880,7 @@ function describeSelectedItem(
     };
   }
   const noticePart = item.hasKeyUpdateNotice
-    ? ` · ${t("node.notifyKeyUpdate.activeBadge")}`
+    ? ` · ${t("notifyKeyUpdate.activeBadge")}`
     : "";
   if (item.kind === "node") {
     const routePart = item.route
@@ -1880,7 +1905,9 @@ function describeSelectedItem(
       ? ` -> ${item.effectiveEgressIp}`
       : "";
     const keysPart =
-      typeof item.activeKeyCount === "number" ? ` · ${item.activeKeyCount} keys` : "";
+      typeof item.activeKeyCount === "number"
+        ? t("ov.map.activeKeysCount", { count: item.activeKeyCount })
+        : "";
     return {
       summary: `${item.nodeName} · ${item.name} (${item.publicAddress}${exitPart}) · ${onlineText}${keysPart} · ${probePart}${noticePart}`,
       href: `${NODES_PATH}#${nodeCardAnchor(item.nodeId)}`,

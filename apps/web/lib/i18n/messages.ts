@@ -2440,6 +2440,8 @@ const ru = {
   "bridge.wytunnel.nodeSetup":
     "1. Установка на VPN-ноде (автоматически остановит и отключит неактивный frpc)",
   "bridge.wytunnel.bridgeSetup": "2. Установка на хосте моста",
+  "bridge.wytunnel.bridgeRemove": "Удалить маршрут WyTunnel на мосте",
+  "bridge.wytunnel.keepaliveInvalid": "Keepalive должен быть 0 (выкл) или от 5 до 300 секунд",
   "bridge.wytunnel.disableFrpcCmd": "Отключить неактивный frpc на ноде (0 RAM / 0 CPU)",
   "bridge.wytunnel.disableFrpsCmd": "Отключить неактивный frps на мосте (0 RAM / 0 CPU)",
   "bridge.frps.enabledLabel": "Использовать frps на этом мосте",
@@ -2448,11 +2450,13 @@ const ru = {
   "bridge.frps.disabledBadge": "frps выкл",
   "bridge.frps.disabledHint":
     "frps отключён в настройках моста. Чтобы освободить память и CPU на хосте моста, выполните команду ниже:",
+  "bridge.frps.enableCmdHint": "Чтобы запустить frps на хосте моста, выполните команду:",
   "bridge.route.wytunnel": "WyTunnel",
 
   // Topology online counters
   "ov.map.onlineCount": "{count} онлайн",
   "ov.map.onlineTitle": "Активные ключи онлайн (окно 180 сек, без служебного зонда)",
+  "ov.map.activeKeysCount": " · {count} ключей",
 
   // Manual server-change key update notices
   "keyCard.serverUpdateTitle": "Важные изменения на сервере — обновите ключ",
@@ -4848,6 +4852,8 @@ const en = {
   "bridge.wytunnel.nodeSetup":
     "1. Install on VPN node (automatically stops & disables inactive frpc)",
   "bridge.wytunnel.bridgeSetup": "2. Install on bridge host",
+  "bridge.wytunnel.bridgeRemove": "Remove WyTunnel route on bridge",
+  "bridge.wytunnel.keepaliveInvalid": "Keepalive must be 0 (off) or between 5 and 300 seconds",
   "bridge.wytunnel.disableFrpcCmd": "Disable inactive frpc on node (0 RAM / 0 CPU)",
   "bridge.wytunnel.disableFrpsCmd": "Disable inactive frps on bridge (0 RAM / 0 CPU)",
   "bridge.frps.enabledLabel": "Run frps on this bridge",
@@ -4856,11 +4862,13 @@ const en = {
   "bridge.frps.disabledBadge": "frps off",
   "bridge.frps.disabledHint":
     "frps is disabled for this bridge. Run the command below on the bridge host to stop it and free RAM/CPU:",
+  "bridge.frps.enableCmdHint": "Run this command on the bridge host to start frps:",
   "bridge.route.wytunnel": "WyTunnel",
 
   // Topology online counters
   "ov.map.onlineCount": "{count} online",
   "ov.map.onlineTitle": "Online active keys (180s window, excluding probe keys)",
+  "ov.map.activeKeysCount": " · {count} keys",
 
   // Manual server-change key update notices
   "keyCard.serverUpdateTitle": "Important server changes — update your key",

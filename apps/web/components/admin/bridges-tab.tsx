@@ -879,14 +879,20 @@ function AddBridgeDialog({
             <Label>{t("bridge.transport.defaultLabel")}</Label>
             <Select
               value={defaultTransport}
-              onValueChange={(value) => setDefaultTransport(value as BridgeRouteTransport)}
+              onValueChange={(value) => {
+                const next = value as BridgeRouteTransport;
+                setDefaultTransport(next);
+                if (next === "frp_tcp") setFrpsEnabled(true);
+              }}
             >
               <SelectTrigger>
                 <SelectValue />
               </SelectTrigger>
               <SelectContent>
                 <SelectItem value="wytunnel">{t("bridge.transport.wytunnel")}</SelectItem>
-                <SelectItem value="frp_tcp">{t("bridge.transport.frp_tcp")}</SelectItem>
+                <SelectItem value="frp_tcp" disabled={!frpsEnabled}>
+                  {t("bridge.transport.frp_tcp")}
+                </SelectItem>
               </SelectContent>
             </Select>
           </div>
@@ -895,7 +901,15 @@ function AddBridgeDialog({
               <p className="font-medium">{t("bridge.frps.enabledLabel")}</p>
               <p className="text-muted-foreground">{t("bridge.frps.enabledHint")}</p>
             </div>
-            <Switch checked={frpsEnabled} onCheckedChange={setFrpsEnabled} />
+            <Switch
+              checked={frpsEnabled}
+              onCheckedChange={(checked) => {
+                setFrpsEnabled(checked);
+                if (!checked && defaultTransport === "frp_tcp") {
+                  setDefaultTransport("wytunnel");
+                }
+              }}
+            />
           </div>
           <details className="rounded-md border px-2 py-1.5">
             <summary className="cursor-pointer text-sm font-medium">
@@ -983,7 +997,7 @@ function RenameBridgeDialog({
     setDefaultTransport(bridge?.defaultTransport ?? "frp_tcp");
     setFrpsEnabled(bridge?.frpsEnabled ?? true);
     setError(null);
-  }, [bridge]);
+  }, [bridge?.id]);
 
   const submit = async (event: React.FormEvent) => {
     event.preventDefault();
@@ -1042,14 +1056,20 @@ function RenameBridgeDialog({
             <Label>{t("bridge.transport.defaultLabel")}</Label>
             <Select
               value={defaultTransport}
-              onValueChange={(value) => setDefaultTransport(value as BridgeRouteTransport)}
+              onValueChange={(value) => {
+                const next = value as BridgeRouteTransport;
+                setDefaultTransport(next);
+                if (next === "frp_tcp") setFrpsEnabled(true);
+              }}
             >
               <SelectTrigger>
                 <SelectValue />
               </SelectTrigger>
               <SelectContent>
                 <SelectItem value="wytunnel">{t("bridge.transport.wytunnel")}</SelectItem>
-                <SelectItem value="frp_tcp">{t("bridge.transport.frp_tcp")}</SelectItem>
+                <SelectItem value="frp_tcp" disabled={!frpsEnabled}>
+                  {t("bridge.transport.frp_tcp")}
+                </SelectItem>
               </SelectContent>
             </Select>
           </div>
@@ -1059,7 +1079,15 @@ function RenameBridgeDialog({
                 <p className="font-medium">{t("bridge.frps.enabledLabel")}</p>
                 <p className="text-muted-foreground">{t("bridge.frps.enabledHint")}</p>
               </div>
-              <Switch checked={frpsEnabled} onCheckedChange={setFrpsEnabled} />
+              <Switch
+                checked={frpsEnabled}
+                onCheckedChange={(checked) => {
+                  setFrpsEnabled(checked);
+                  if (!checked && defaultTransport === "frp_tcp") {
+                    setDefaultTransport("wytunnel");
+                  }
+                }}
+              />
             </div>
             {!frpsEnabled ? (
               <div className="space-y-1 border-t border-border/60 pt-2">
@@ -1067,6 +1095,15 @@ function RenameBridgeDialog({
                 <CommandBlock
                   label={t("bridge.wytunnel.disableFrpsCmd")}
                   command="sudo bash /opt/amnezia-bridge/scripts/toggle-frps.sh --disable"
+                  hideLabel
+                />
+              </div>
+            ) : bridge && !bridge.frpsEnabled ? (
+              <div className="space-y-1 border-t border-border/60 pt-2">
+                <p className="text-muted-foreground">{t("bridge.frps.enableCmdHint")}</p>
+                <CommandBlock
+                  label={t("bridge.frps.enabledLabel")}
+                  command="sudo bash /opt/amnezia-bridge/scripts/toggle-frps.sh --enable"
                   hideLabel
                 />
               </div>

@@ -33,14 +33,15 @@ const startMockSocket = async (socketPath: string, body: Record<string, unknown>
 };
 
 describe("readWytunnelInstances", () => {
-  it("returns empty array when run directory does not exist", async () => {
-    expect(await readWytunnelInstances("/nonexistent/wytunnel/dir")).toEqual([]);
+  it("returns undefined when run directory does not exist", async () => {
+    expect(await readWytunnelInstances("/nonexistent/wytunnel/dir")).toBeUndefined();
   });
 
-  it("discovers pool and degraded sockets with telemetry and stable markers", async () => {
+  it("discovers pool, degraded, and empty-JSON sockets fail-closed with stable markers", async () => {
     // Keep Unix socket paths under macOS's 104-byte sockaddr_un limit.
     const dir = mkdtempSync(join("/tmp", "wt-"));
     cleanupDirs.push(dir);
+    const routeC = "cccccccc-dddd-4eee-8fff-000000000000";
 
     writeFileSync(
       join(dir, `client-${ROUTE_A}.meta.json`),
@@ -77,8 +78,15 @@ describe("readWytunnelInstances", () => {
       poolRttMs: null,
     });
 
+    writeFileSync(
+      join(dir, `client-${routeC}.meta.json`),
+      JSON.stringify({ remotePort: 41006, startedAt: "2026-11-28T05:02:00Z" }),
+    );
+    await startMockSocket(join(dir, `client-${routeC}.sock`), {});
+
     const instances = await readWytunnelInstances(dir, 500);
-    expect(instances).toHaveLength(2);
+    if (!instances) throw new Error("expected instances array");
+    expect(instances).toHaveLength(3);
 
     const a = instances.find((i) => i.routeId === ROUTE_A)!;
     expect(a.online).toBe(true);
@@ -97,6 +105,10 @@ describe("readWytunnelInstances", () => {
     expect(b.online).toBe(false);
     expect(b.registrationMarker).toBeNull();
     expect(b.telemetry?.healthyStreams).toBe(0);
+
+    const c = instances.find((i) => i.routeId === routeC)!;
+    expect(c.online).toBe(false);
+    expect(c.registrationMarker).toBeNull();
   });
 });
 

@@ -1355,7 +1355,7 @@ export function CandidateRoute({
               />
               {route.setupCommands.bridgeRemove ? (
                 <CommandBlock
-                  label={t("bridge.wytunnel.bridgeSetup")}
+                  label={t("bridge.wytunnel.bridgeRemove")}
                   command={route.setupCommands.bridgeRemove}
                 />
               ) : null}

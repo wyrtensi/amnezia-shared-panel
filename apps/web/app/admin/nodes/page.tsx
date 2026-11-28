@@ -32,11 +32,13 @@ import {
   NodeTopologyDialog,
   summarizeNodeEgress,
 } from "@/components/admin/node-topology-dialog";
+import { NotifyKeyUpdateDialog } from "@/components/admin/notify-key-update-dialog";
 import { ServiceChecksCard } from "@/components/admin/service-checks-card";
 import { useServiceChecks } from "@/components/admin/use-service-checks";
 import { ReachabilityCard } from "@/components/admin/reachability-card";
 import { useReachability } from "@/components/admin/use-reachability";
 import { useAdminData, type AdminNode } from "@/components/admin/admin-data";
+import { clearNodeKeyUpdate, notifyNodeKeyUpdate } from "@/lib/egress-api";
 import { useT } from "@/lib/i18n/provider";
 
 export default function AdminNodesPage() {
@@ -72,8 +74,11 @@ function AdminNodesView() {
   const [topologyNodeId, setTopologyNodeId] = React.useState<string | null>(
     null,
   );
+  const [notifyNodeId, setNotifyNodeId] = React.useState<string | null>(null);
   const topologyNode =
     nodes.find((node) => node.id === topologyNodeId) ?? null;
+  const notifyNode =
+    nodes.find((node) => node.id === notifyNodeId) ?? null;
 
   React.useEffect(() => {
     if (legacyBridgeLink && !window.location.hash) {
@@ -333,6 +338,7 @@ function AdminNodesView() {
                   onUpdateAgent={() => setUpdateAgentNode(node)}
                   onSetCapacity={() => setCapacityNode(node)}
                   onOpenTopology={() => setTopologyNodeId(node.id)}
+                  onNotifyKeyUpdate={() => setNotifyNodeId(node.id)}
                   onSwitchDirect={
                     infra.loading ||
                     infra.failed ||
@@ -455,6 +461,21 @@ function AdminNodesView() {
           });
           await Promise.all([reload(), reachability.reload()]);
         }}
+      />
+      <NotifyKeyUpdateDialog
+        target={
+          notifyNode
+            ? {
+                title: notifyNode.publicName || notifyNode.name,
+                notifiedAt: notifyNode.keyUpdateNotifiedAt ?? null,
+                note: notifyNode.keyUpdateNotifyNote ?? null,
+                onNotify: (note) => notifyNodeKeyUpdate(request, notifyNode.id, note),
+                onClear: () => clearNodeKeyUpdate(request, notifyNode.id),
+              }
+            : null
+        }
+        onClose={() => setNotifyNodeId(null)}
+        onDone={reload}
       />
     </div>
   );

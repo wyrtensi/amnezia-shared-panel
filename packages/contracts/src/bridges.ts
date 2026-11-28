@@ -142,9 +142,10 @@ export const deriveWytunnelTransportPort = (
   publicUdpPort: number,
   udpPortStart: number = BRIDGE_DEFAULT_UDP_PORT_START,
 ): number => {
-  const slot = Math.max(0, publicUdpPort - udpPortStart);
+  const rawSlot = Math.max(0, publicUdpPort - udpPortStart);
+  const slot = rawSlot <= 250 ? rawSlot : publicUdpPort % 250;
   const candidate = BRIDGE_WYTUNNEL_DEFAULT_PORT_BASE + slot;
-  return candidate <= 65_535 ? candidate : BRIDGE_WYTUNNEL_DEFAULT_PORT_BASE + (slot % 1000);
+  return candidate <= 65_535 ? candidate : BRIDGE_WYTUNNEL_DEFAULT_PORT_BASE + (slot % 250);
 };
 
 export const bridgeRouteTelemetrySchema = z.object({

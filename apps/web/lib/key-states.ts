@@ -39,15 +39,29 @@ export const isVisibleToOwner = (state: string): boolean =>
  * Returns the same array when nothing changes, so React skips the re-render.
  */
 export const markRulesDelivered = <
-  T extends { id: string; rulesOutdated?: boolean; rulesUpdate?: unknown },
+  T extends {
+    id: string;
+    rulesOutdated?: boolean;
+    rulesUpdate?: unknown;
+    serverUpdate?: unknown;
+  },
 >(
   keys: T[],
   keyId: string,
 ): T[] =>
-  keys.some((key) => key.id === keyId && (key.rulesOutdated || key.rulesUpdate))
+  keys.some(
+    (key) =>
+      key.id === keyId &&
+      (key.rulesOutdated || key.rulesUpdate || key.serverUpdate),
+  )
     ? keys.map((key) =>
         key.id === keyId
-          ? { ...key, rulesOutdated: false, rulesUpdate: undefined }
+          ? {
+              ...key,
+              rulesOutdated: false,
+              rulesUpdate: undefined,
+              serverUpdate: undefined,
+            }
           : key,
       )
     : keys;

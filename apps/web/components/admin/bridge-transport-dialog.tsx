@@ -176,6 +176,10 @@ export function BridgeTransportDialog({
   const submit = async (event: React.FormEvent) => {
     event.preventDefault();
     if (!route) return;
+    if (transport === "wytunnel" && keepaliveSec !== 0 && (keepaliveSec < 5 || keepaliveSec > 300)) {
+      setError(t("bridge.wytunnel.keepaliveInvalid"));
+      return;
+    }
     setBusy(true);
     setError(null);
     try {
@@ -186,12 +190,12 @@ export function BridgeTransportDialog({
               const [k, m] = fecPreset.split(":").map(Number);
               return k && m ? { k, m } : null;
             })();
-      const parsedPort = transportPort.trim() === "" ? undefined : Number(transportPort);
+      const parsedPort = transportPort.trim() === "" ? null : Number(transportPort);
       await updateRouteTransport(request, route.id, {
         transport,
         ...(transport === "wytunnel"
           ? {
-              ...(parsedPort !== undefined ? { transportPort: parsedPort } : {}),
+              transportPort: parsedPort,
               transportConfig: {
                 poolSize,
                 poolRotateIntervalSec: rotateIntervalSec,

@@ -154,7 +154,9 @@ export type BridgeAgentPollOutcome =
        * marked offline.
        */
       unreadableProxyIds: readonly string[];
-      /** `PROXY_ENTRY_INVALID` when entries were dropped, else the agent's first error. */
+      /** Route UUIDs of malformed `wytunnel` entries kept Unknown instead of offline. */
+      unreadableWytunnelRouteIds?: readonly string[];
+      /** `PROXY_ENTRY_INVALID` / `WYTUNNEL_ENTRY_INVALID` when entries were dropped, else the agent's first error. */
       errorCode: string | null;
     }
   | { kind: "down"; errorCode: BridgeAgentPollError }
@@ -312,16 +314,31 @@ const readProxies = (
 
 const readWytunnelInstances = (
   entries: readonly unknown[] | undefined,
-): BridgeAgentWytunnelInstance[] => {
-  if (!entries) return [];
+): {
+  instances: BridgeAgentWytunnelInstance[];
+  unreadableRouteIds: string[];
+  dropped: number;
+} => {
+  if (!entries) return { instances: [], unreadableRouteIds: [], dropped: 0 };
   const instances: BridgeAgentWytunnelInstance[] = [];
+  const unreadableRouteIds: string[] = [];
+  let dropped = 0;
   for (const entry of entries) {
     const parsed = bridgeAgentWytunnelInstanceSchema.safeParse(entry);
     if (parsed.success) {
       instances.push(parsed.data);
+      continue;
+    }
+    dropped += 1;
+    const rid =
+      typeof entry === "object" && entry !== null
+        ? (entry as { routeId?: unknown }).routeId
+        : undefined;
+    if (typeof rid === "string" && rid.length > 0 && rid.length <= 200) {
+      unreadableRouteIds.push(rid);
     }
   }
-  return instances;
+  return { instances, unreadableRouteIds, dropped };
 };
 
 const reportedApiVersion = (body: unknown): number | null => {
@@ -400,7 +417,7 @@ export const classifyBridgeAgentStatus = (
   const read = status.frps.reachable
     ? readProxies(status.proxies)
     : { proxies: [], unreadableProxyIds: [], dropped: 0 };
-  const wytunnelInstances = readWytunnelInstances(status.wytunnel);
+  const wytunnelRead = readWytunnelInstances(status.wytunnel);
   return {
     kind: "ok",
     agentVersion: status.agentVersion,
@@ -414,9 +431,17 @@ export const classifyBridgeAgentStatus = (
     // An unreachable frps reports an empty list that means "unknown"; it is
     // dropped here so no caller can mistake it for "every route is gone".
     proxies: read.proxies,
-    ...(status.wytunnel !== undefined ? { wytunnelInstances } : {}),
+    ...(status.wytunnel !== undefined ? { wytunnelInstances: wytunnelRead.instances } : {}),
     unreadableProxyIds: read.unreadableProxyIds,
-    errorCode: read.dropped > 0 ? "PROXY_ENTRY_INVALID" : (status.errors[0]?.code ?? null),
+    ...(wytunnelRead.unreadableRouteIds.length > 0
+      ? { unreadableWytunnelRouteIds: wytunnelRead.unreadableRouteIds }
+      : {}),
+    errorCode:
+      read.dropped > 0
+        ? "PROXY_ENTRY_INVALID"
+        : wytunnelRead.dropped > 0
+          ? "WYTUNNEL_ENTRY_INVALID"
+          : (status.errors[0]?.code ?? null),
   };
 };
 

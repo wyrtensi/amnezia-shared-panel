@@ -40,14 +40,38 @@ describe("isVisibleToOwner", () => {
 
 describe("markRulesDelivered", () => {
   const keys = [
-    { id: "a", rulesOutdated: true, rulesUpdate: { level: "important" as const } },
-    { id: "b", rulesOutdated: true, rulesUpdate: { level: "soft" as const } },
+    {
+      id: "a",
+      rulesOutdated: true,
+      rulesUpdate: { level: "important" as const },
+      serverUpdate: { scope: "node" as const, notifiedAt: "2026-11-28T00:00:00Z", note: null },
+    },
+    {
+      id: "b",
+      rulesOutdated: true,
+      rulesUpdate: { level: "soft" as const },
+      serverUpdate: { scope: "exit" as const, notifiedAt: "2026-11-28T00:00:00Z", note: "DNS" },
+    },
   ];
 
-  it("clears the flag and notice payload on the delivered key only", () => {
+  it("clears the flag, rule notice, and server update notice on the delivered key only", () => {
     expect(markRulesDelivered(keys, "a")).toEqual([
-      { id: "a", rulesOutdated: false, rulesUpdate: undefined },
-      { id: "b", rulesOutdated: true, rulesUpdate: { level: "soft" } },
+      { id: "a", rulesOutdated: false, rulesUpdate: undefined, serverUpdate: undefined },
+      {
+        id: "b",
+        rulesOutdated: true,
+        rulesUpdate: { level: "soft" },
+        serverUpdate: { scope: "exit", notifiedAt: "2026-11-28T00:00:00Z", note: "DNS" },
+      },
+    ]);
+  });
+
+  it("clears standalone serverUpdate even when rulesOutdated is already false", () => {
+    const serverOnly = [
+      { id: "c", rulesOutdated: false, serverUpdate: { scope: "node" as const } },
+    ];
+    expect(markRulesDelivered(serverOnly, "c")).toEqual([
+      { id: "c", rulesOutdated: false, rulesUpdate: undefined, serverUpdate: undefined },
     ]);
   });
 

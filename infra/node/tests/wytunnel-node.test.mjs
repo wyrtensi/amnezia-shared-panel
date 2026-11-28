@@ -28,6 +28,26 @@ test("install-wytunnel-node.sh dry-run derives slot, bridge allowlist, pool-mode
   assert.match(out, /disable_frpc\s*=\s*1/);
 });
 
+test("install-wytunnel-node.sh derives distinct TUN slots from --transport-port across multiple bridges", () => {
+  const out = execFileSync(
+    "bash",
+    [
+      nodeScript,
+      "--route-id", ROUTE_ID,
+      "--bridge-ip", "203.0.113.51",
+      "--node-primary-ip", "198.51.100.20",
+      "--remote-port", "41004",
+      "--transport-port", "14154",
+      "--pool-mode",
+      "--wan-if", "eth0",
+      "--dry-run",
+    ],
+    { encoding: "utf8" },
+  );
+  assert.match(out, /listen_faketcp\s*=\s*198\.51\.100\.20:14154\/tcp/);
+  assert.match(out, /tun\s*=\s*pts-54 \(10\.251\.54\.1 <-> 10\.251\.54\.2\)/);
+});
+
 test("install-wytunnel-node.sh --remove --dry-run plans clean unit removal", () => {
   const out = execFileSync(
     "bash",

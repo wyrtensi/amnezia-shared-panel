@@ -275,7 +275,7 @@ export function CreateKeyWizard({
       ? (quotaByNode.get(selectedNode.id)?.full ?? false)
       : false;
   const nodeProtocols: ProtocolKind[] =
-    selectedOption?.selectableProtocols?.length
+    selectedOption?.selectableProtocols !== undefined
       ? selectedOption.selectableProtocols
       : nodeSelectableProtocols(selectedNode);
 

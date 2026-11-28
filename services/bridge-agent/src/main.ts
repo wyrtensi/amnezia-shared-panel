@@ -1,3 +1,4 @@
+import { existsSync } from "node:fs";
 import { loadConfig } from "./config.js";
 import { createFrpsTlsSampler, FRPS_TRUST_DIRECTORY } from "./frpsTls.js";
 import { createHostMetricsSampler } from "./hostMetrics.js";
@@ -33,6 +34,7 @@ const main = (): void => {
         ? createFrpsTlsSampler(FRPS_TRUST_DIRECTORY, config.applied.controlTcpPort)
         : undefined,
       sampleWytunnel: () => readWytunnelInstances(config.wytunnel.runDir, config.wytunnel.timeoutMs),
+      hasWytunnelRunDir: () => existsSync(config.wytunnel.runDir),
     },
     log,
   });

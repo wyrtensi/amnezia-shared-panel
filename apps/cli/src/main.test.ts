@@ -2297,7 +2297,7 @@ describe("bridge candidate validation commands", () => {
       `--out=${join(dir, "test.vpn")}`,
     ]);
     expect(printed).not.toContain("registration marker:");
-    expect(err).toContain("no frps registration has been observed");
+    expect(err).toContain("no live transport registration has been observed");
   });
 
   it("bridge-route-test-config refuses to overwrite an existing file and sends nothing", async () => {

@@ -3,7 +3,10 @@
 import * as React from "react";
 import { BellRing } from "lucide-react";
 import { toast } from "sonner";
-import type { NotifyKeyUpdateResult } from "@amnezia/contracts";
+import {
+  KEY_UPDATE_NOTIFY_NOTE_MAX_LENGTH,
+  type NotifyKeyUpdateResult,
+} from "@amnezia/contracts";
 import { Button } from "@/components/ui/button";
 import {
   Dialog,
@@ -91,7 +94,7 @@ export function NotifyKeyUpdateDialog({
             <Label htmlFor="notify-key-update-note">{t("notifyKeyUpdate.noteLabel")}</Label>
             <Input
               id="notify-key-update-note"
-              maxLength={240}
+              maxLength={KEY_UPDATE_NOTIFY_NOTE_MAX_LENGTH}
               placeholder={t("notifyKeyUpdate.notePlaceholder")}
               value={note}
               onChange={(event) => setNote(event.target.value)}

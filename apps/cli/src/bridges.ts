@@ -871,6 +871,8 @@ export async function cmdBridgeUpdate(api: BridgeApi, args: string[]): Promise<v
   }
   if (body.frpsEnabled === false) {
     console.log("  To free RAM/CPU on the bridge host, run: sudo bash /opt/amnezia-bridge/scripts/toggle-frps.sh --disable");
+  } else if (body.frpsEnabled === true) {
+    console.log("  To start frps on the bridge host, run: sudo bash /opt/amnezia-bridge/scripts/toggle-frps.sh --enable");
   }
 }
 
@@ -998,7 +1000,7 @@ export async function cmdBridgeEnroll(
   console.log(
     `  agent ${show(summary.agentVersion)} api v${show(summary.agentApiVersion)}  capabilities: ${summary.agentCapabilities?.join(", ") || "—"}`,
   );
-  console.log(`  frps ${describeFrps(m)}`);
+  console.log(`  frps ${describeFrps(m, bridge.frpsEnabled)}`);
 }
 
 /**
@@ -1342,7 +1344,7 @@ export async function cmdBridgeRouteTestConfig(
     );
   } else {
     console.error(
-      "warning: no frps registration has been observed for this route yet, so there is no marker to verify against; activation needs a fresh observation.",
+      "warning: no live transport registration has been observed for this route yet, so there is no marker to verify against; activation needs a fresh observation.",
     );
   }
 }
