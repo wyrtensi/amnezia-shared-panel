@@ -88,7 +88,12 @@ export type BridgeGraphNode = {
   managementStatus: Bridge["managementStatus"];
   frpsReachable: boolean | null;
   activeRouteCount: number;
+  wytunnelRouteCount: number;
+  wytunnelHealthyStreams: number;
+  wytunnelTargetStreams: number;
+  wytunnelAvgRttMs: number | null;
   onlinePeerCount: number;
+  onlineByProtocol?: Record<string, number>;
   health: TopologyHealth;
 };
 
@@ -111,6 +116,8 @@ export type VpnNodeGraphNode = {
   peerCount: number;
   maxPeers: number;
   onlinePeerCount: number;
+  onlineByProtocol?: Record<string, number>;
+  hasKeyUpdateNotice: boolean;
   route: NodeRouteLabel | null;
   health: TopologyHealth;
 };
@@ -138,6 +145,10 @@ export type EntryGraphNode = {
   effectiveEgressIp: string | null;
   egressIpId: string | null;
   onlinePeerCount: number;
+  onlineByProtocol?: Record<string, number>;
+  activeKeyCount?: number;
+  assignedKeyCount?: number;
+  hasKeyUpdateNotice: boolean;
   isSynthetic: boolean;
   health: TopologyHealth;
 };
@@ -161,6 +172,8 @@ export type ExitGraphNode = {
   failingChecks: TopologyCheckFailure[];
   incomingVariantCount: number;
   onlinePeerCount: number;
+  onlineByProtocol?: Record<string, number>;
+  hasKeyUpdateNotice: boolean;
   isSynthetic: boolean;
   health: TopologyHealth;
 };
@@ -478,9 +491,21 @@ export function buildFleetTopologyGraph({
       const reachBridge = reachBridgeById.get(bridge.id);
       const frpsReachable =
         reachBridge?.frpsReachable ?? bridge.management?.frpsReachable ?? null;
-      const activeRouteCount = bridge.routes.filter(
-        (r) => r.state === "active",
-      ).length;
+      const activeRoutes = bridge.routes.filter((r) => r.state === "active");
+      const wytunnelRoutes = activeRoutes.filter((r) => r.transport === "wytunnel");
+      let wytunnelHealthyStreams = 0;
+      let wytunnelTargetStreams = 0;
+      const rtts: number[] = [];
+      for (const route of wytunnelRoutes) {
+        wytunnelHealthyStreams += route.telemetry?.healthyStreams ?? 0;
+        wytunnelTargetStreams +=
+          route.telemetry?.targetStreams ?? route.transportConfig?.poolSize ?? 0;
+        if (typeof route.telemetry?.poolRttMs === "number") {
+          rtts.push(route.telemetry.poolRttMs);
+        }
+      }
+      const wytunnelAvgRttMs =
+        rtts.length > 0 ? rtts.reduce((sum, val) => sum + val, 0) / rtts.length : null;
       return {
         id: `bridge:${bridge.id}`,
         kind: "bridge",
@@ -493,8 +518,13 @@ export function buildFleetTopologyGraph({
         frpsEnabled: bridge.frpsEnabled,
         managementStatus: bridge.managementStatus,
         frpsReachable,
-        activeRouteCount,
+        activeRouteCount: activeRoutes.length,
+        wytunnelRouteCount: wytunnelRoutes.length,
+        wytunnelHealthyStreams,
+        wytunnelTargetStreams,
+        wytunnelAvgRttMs,
         onlinePeerCount: bridge.onlinePeerCount ?? 0,
+        onlineByProtocol: bridge.onlineByProtocol,
         health: resolveBridgeHealth(bridge, reachBridge, frpsReachable),
       };
     });
@@ -586,6 +616,8 @@ export function buildFleetTopologyGraph({
       peerCount: node.peerCount ?? 0,
       maxPeers: node.maxPeers,
       onlinePeerCount: node.onlinePeerCount ?? 0,
+      onlineByProtocol: node.onlineByProtocol,
+      hasKeyUpdateNotice: Boolean(node.keyUpdateNotifiedAt),
       route,
       health: nodeHealth,
     });
@@ -680,6 +712,8 @@ export function buildFleetTopologyGraph({
         failingChecks: dedupedChecks,
         incomingVariantCount: 0,
         onlinePeerCount: exitIp.onlinePeerCount ?? 0,
+        onlineByProtocol: exitIp.onlineByProtocol,
+        hasKeyUpdateNotice: Boolean(exitIp.keyUpdateNotifiedAt),
         isSynthetic: false,
         health: resolveExitHealth(
           node.enabled,
@@ -732,6 +766,9 @@ export function buildFleetTopologyGraph({
         failingChecks: dedupedChecks,
         incomingVariantCount: 0,
         onlinePeerCount: nodeEgressIps.length === 0 ? (node.onlinePeerCount ?? 0) : 0,
+        onlineByProtocol:
+          nodeEgressIps.length === 0 ? node.onlineByProtocol : undefined,
+        hasKeyUpdateNotice: false,
         isSynthetic: true,
         health: resolveExitHealth(
           node.enabled,
@@ -791,6 +828,10 @@ export function buildFleetTopologyGraph({
           effectiveEgressIp: ep.effectiveEgressIp ?? null,
           egressIpId: ep.egressIpId ?? null,
           onlinePeerCount: ep.onlinePeerCount ?? 0,
+          onlineByProtocol: ep.onlineByProtocol,
+          activeKeyCount: ep.activeKeyCount,
+          assignedKeyCount: ep.assignedKeyCount,
+          hasKeyUpdateNotice: Boolean(ep.keyUpdateNotifiedAt),
           isSynthetic: false,
           health: entryHealth,
         });
@@ -881,6 +922,8 @@ export function buildFleetTopologyGraph({
         effectiveEgressIp: null,
         egressIpId: null,
         onlinePeerCount: node.onlinePeerCount ?? 0,
+        onlineByProtocol: node.onlineByProtocol,
+        hasKeyUpdateNotice: false,
         isSynthetic: true,
         health: node.enabled
           ? reachNode?.incidentOpen || reachNode?.status === "failed"
@@ -1388,14 +1431,26 @@ export function FleetTopologyMap({
                           const isSelected = effectiveSelectedId === b.id;
                           const isDimmed =
                             hasHighlight && !activeNodeIds.has(b.id);
+                          const wytunnelSummary =
+                            b.wytunnelRouteCount > 0
+                              ? b.wytunnelTargetStreams > 0
+                                ? `WyTunnel ${b.wytunnelHealthyStreams}/${b.wytunnelTargetStreams}`
+                                : "WyTunnel"
+                              : null;
                           const frpsLabel =
                             b.frpsEnabled === false
-                              ? "WyTunnel"
+                              ? (wytunnelSummary ?? "WyTunnel")
                               : b.frpsReachable === null
                                 ? "frps ?"
                                 : b.frpsReachable
                                   ? "frps ok"
                                   : "frps down";
+                          const transportLine =
+                            b.frpsEnabled === false
+                              ? frpsLabel
+                              : wytunnelSummary
+                                ? `${frpsLabel} · ${wytunnelSummary}`
+                                : `${frpsLabel} · :${b.controlTcpPort}`;
                           return (
                             <button
                               key={b.id}
@@ -1445,9 +1500,7 @@ export function FleetTopologyMap({
                                           : "text-muted-foreground",
                                   )}
                                 >
-                                  {b.frpsEnabled === false
-                                    ? frpsLabel
-                                    : `${frpsLabel} · :${b.controlTcpPort}`}
+                                  {transportLine}
                                 </span>
                                 <span
                                   title={t(`bridge.status.${b.managementStatus}`)}
@@ -1758,25 +1811,52 @@ export function FleetTopologyMap({
   );
 }
 
+const PROTOCOL_DISPLAY_LABEL: Record<string, string> = {
+  awg3: "AWG 3.1",
+  awg2: "AWG 2.0",
+};
+
+function formatProtocolBreakdown(onlineByProtocol?: Record<string, number>): string | null {
+  if (!onlineByProtocol) return null;
+  const parts = Object.entries(onlineByProtocol)
+    .filter(([, count]) => typeof count === "number" && count > 0)
+    .map(([proto, count]) => `${PROTOCOL_DISPLAY_LABEL[proto] ?? proto.toUpperCase()}: ${count}`);
+  return parts.length > 0 ? parts.join(", ") : null;
+}
+
 function describeSelectedItem(
   item: SelectableTopologyItem,
   t: ReturnType<typeof useT>["t"],
 ): { summary: string; href: string; linkLabel: string } {
+  const breakdown = formatProtocolBreakdown(item.onlineByProtocol);
+  const onlineText = breakdown
+    ? `${t("ov.map.onlineCount", { count: item.onlinePeerCount })} (${breakdown})`
+    : t("ov.map.onlineCount", { count: item.onlinePeerCount });
+
   if (item.kind === "bridge") {
+    const wtPart =
+      item.wytunnelRouteCount > 0
+        ? `WyTunnel ${item.wytunnelHealthyStreams}/${item.wytunnelTargetStreams}${item.wytunnelAvgRttMs !== null ? ` (${Math.round(item.wytunnelAvgRttMs)} ms)` : ""}`
+        : null;
     const frpsText =
       item.frpsEnabled === false
-        ? "WyTunnel"
+        ? (wtPart ?? "WyTunnel")
         : item.frpsReachable === null
           ? "frps ?"
           : item.frpsReachable
             ? "frps ok"
             : "frps down";
+    const transportPart =
+      item.frpsEnabled !== false && wtPart ? `${frpsText} · ${wtPart}` : frpsText;
     return {
-      summary: `${item.name} · ${item.publicIpv4} · ${t("ov.map.onlineCount", { count: item.onlinePeerCount })} · ${frpsText} · ${t(`bridge.status.${item.managementStatus}`)}`,
+      summary: `${item.name} · ${item.publicIpv4} · ${onlineText} · ${transportPart} · ${t(`bridge.status.${item.managementStatus}`)}`,
       href: bridgeSectionHref,
       linkLabel: t("ov.map.openBridges"),
     };
   }
+  const noticePart = item.hasKeyUpdateNotice
+    ? ` · ${t("node.notifyKeyUpdate.activeBadge")}`
+    : "";
   if (item.kind === "node") {
     const routePart = item.route
       ? t("ov.map.viaBridge", { name: item.route.bridgeName })
@@ -1785,7 +1865,7 @@ function describeSelectedItem(
       ? t(`egress.daemon.${item.egressDaemonState}`)
       : "—";
     return {
-      summary: `${item.name} · ${t("ov.map.onlineCount", { count: item.onlinePeerCount })} · ${t(`egress.mode.${item.egressMode}`)} · egressd: ${egressPart} · ${item.peerCount}/${item.maxPeers} · ${routePart}`,
+      summary: `${item.name} · ${onlineText} · ${t(`egress.mode.${item.egressMode}`)} · egressd: ${egressPart} · ${item.peerCount}/${item.maxPeers} · ${routePart}${noticePart}`,
       href: `${NODES_PATH}#${nodeCardAnchor(item.nodeId)}`,
       linkLabel: t("ov.map.openNode"),
     };
@@ -1799,8 +1879,10 @@ function describeSelectedItem(
     const exitPart = item.effectiveEgressIp
       ? ` -> ${item.effectiveEgressIp}`
       : "";
+    const keysPart =
+      typeof item.activeKeyCount === "number" ? ` · ${item.activeKeyCount} keys` : "";
     return {
-      summary: `${item.nodeName} · ${item.name} (${item.publicAddress}${exitPart}) · ${t("ov.map.onlineCount", { count: item.onlinePeerCount })} · ${probePart}`,
+      summary: `${item.nodeName} · ${item.name} (${item.publicAddress}${exitPart}) · ${onlineText}${keysPart} · ${probePart}${noticePart}`,
       href: `${NODES_PATH}#${nodeCardAnchor(item.nodeId)}`,
       linkLabel: t("ov.map.openNode"),
     };
@@ -1813,7 +1895,7 @@ function describeSelectedItem(
       ? ` · ${item.failingChecks.map((c) => c.checkName).join(", ")}`
       : "";
   return {
-    summary: `${item.nodeName} · ${item.ipv4}${item.label ? ` (${item.label})` : ""} · ${t("ov.map.onlineCount", { count: item.onlinePeerCount })} · ${hostPart}${checksPart}`,
+    summary: `${item.nodeName} · ${item.ipv4}${item.label ? ` (${item.label})` : ""} · ${onlineText} · ${hostPart}${checksPart}${noticePart}`,
     href: `${NODES_PATH}#${nodeCardAnchor(item.nodeId)}`,
     linkLabel: t("ov.map.openNode"),
   };

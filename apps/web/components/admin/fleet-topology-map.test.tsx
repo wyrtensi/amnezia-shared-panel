@@ -1001,4 +1001,127 @@ describe("FleetTopologyMap SSR markup", () => {
     expect(graph.entries[0]?.onlinePeerCount).toBe(4);
     expect(graph.exits[0]?.onlinePeerCount).toBe(4);
   });
+
+  it("aggregates WyTunnel pool telemetry, protocol breakdown, and update notices on topology map", () => {
+    const bridge = baseBridge({
+      defaultTransport: "wytunnel",
+      frpsEnabled: false,
+      onlinePeerCount: 7,
+      onlineByProtocol: { awg3: 6, awg2: 1 },
+      routes: [
+        {
+          id: "r-wt",
+          nodeId: "n-wt",
+          nodeName: "de-wt",
+          publicUdpPort: 41004,
+          state: "active",
+          transport: "wytunnel",
+          transportPort: 14104,
+          transportConfig: {
+            poolSize: 10,
+            poolRotateIntervalSec: 2700,
+            poolRotateDrainSec: 5,
+            keepaliveSec: 25,
+            fec: null,
+            handshakeMode: "none",
+            ebpfEnabled: true,
+          },
+          registration: {
+            status: "online",
+            marker: "wt-10",
+            observedAt: "2026-11-28T10:00:00.000Z",
+          },
+          telemetry: {
+            mode: "pool",
+            healthyStreams: 10,
+            targetStreams: 10,
+            poolRttMs: 42,
+            failoversTotal: 0,
+            rotationsTotal: 2,
+            activeSessions: 7,
+          },
+          verification: {
+            kind: "awg_path",
+            status: "ok",
+            checkedAt: "2026-11-28T10:00:00.000Z",
+          },
+        },
+      ],
+    });
+    const node = baseNode({
+      id: "n-wt",
+      name: "de-wt",
+      onlinePeerCount: 7,
+      onlineByProtocol: { awg3: 7 },
+      keyUpdateNotifiedAt: "2026-11-28T09:00:00.000Z",
+      publicEndpoints: [
+        {
+          id: "ep-wt",
+          ordinal: 1,
+          name: "DE Entry",
+          publicAddress: "198.51.100.10",
+          enabled: true,
+          reachabilityEnabled: true,
+          probeStatus: "ok",
+          probeCheckedAt: null,
+          probeDetail: null,
+          onlinePeerCount: 7,
+          onlineByProtocol: { awg3: 7 },
+          activeKeyCount: 15,
+          keyUpdateNotifiedAt: "2026-11-28T09:00:00.000Z",
+        },
+      ],
+    });
+
+    const graph = buildFleetTopologyGraph({
+      nodes: [node],
+      bridges: [bridge],
+      routeByNode: new Map([
+        [
+          "n-wt",
+          {
+            bridgeId: "b-1",
+            bridgeName: "Bridge MSK",
+            entry: "203.0.113.5:41004",
+            revision: 1,
+          },
+        ],
+      ]),
+      serviceChecks: [],
+      activeKeysCount: 15,
+      onlineDevicesCount: 7,
+    });
+
+    expect(graph.bridges[0]?.wytunnelRouteCount).toBe(1);
+    expect(graph.bridges[0]?.wytunnelHealthyStreams).toBe(10);
+    expect(graph.bridges[0]?.wytunnelTargetStreams).toBe(10);
+    expect(graph.bridges[0]?.wytunnelAvgRttMs).toBe(42);
+    expect(graph.bridges[0]?.onlineByProtocol).toEqual({ awg3: 6, awg2: 1 });
+    expect(graph.nodes[0]?.hasKeyUpdateNotice).toBe(true);
+    expect(graph.entries[0]?.activeKeyCount).toBe(15);
+
+    const html = renderToStaticMarkup(
+      <FleetTopologyMap
+        nodes={[node]}
+        bridges={[bridge]}
+        routeByNode={
+          new Map([
+            [
+              "n-wt",
+              {
+                bridgeId: "b-1",
+                bridgeName: "Bridge MSK",
+                entry: "203.0.113.5:41004",
+                revision: 1,
+              },
+            ],
+          ])
+        }
+        serviceChecks={[]}
+        activeKeysCount={15}
+        onlineDevicesCount={7}
+      />,
+    );
+    expect(html).toContain("WyTunnel 10/10");
+  });
 });
