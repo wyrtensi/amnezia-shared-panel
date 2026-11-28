@@ -4,6 +4,7 @@ import {
   bridgeFrpsTlsStatusSchema,
   bridgeHostMetricsSchema,
   bridgeRegistrationMarkerSchema,
+  bridgeRouteTelemetrySchema,
   bridgeTrafficTodaySchema,
   type BridgeMetrics,
 } from "./bridges.js";
@@ -19,6 +20,8 @@ import {
 export const BRIDGE_AGENT_API_VERSION = 1;
 /** The capability an agent must report for `GET /v1/status`. */
 export const BRIDGE_AGENT_STATUS_CAPABILITY = "status.v1";
+/** Capability reported by bridge-agents that observe local WyTunnel status sockets. */
+export const BRIDGE_AGENT_WYTUNNEL_CAPABILITY = "wytunnel.v1";
 
 /** Outbox job type of one bridge's status poll. */
 export const BRIDGE_AGENT_POLL_JOB_TYPE = "bridge_agent.poll";
@@ -84,12 +87,23 @@ export const bridgeAgentProxySchema = z.object({
 });
 export type BridgeAgentProxy = z.infer<typeof bridgeAgentProxySchema>;
 
+export const bridgeAgentWytunnelInstanceSchema = z.object({
+  routeId: z.uuid(),
+  remotePort: z.int().min(0).max(65_535).nullable().optional(),
+  online: z.boolean(),
+  registrationMarker: bridgeRegistrationMarkerSchema.nullable(),
+  telemetry: bridgeRouteTelemetrySchema.optional(),
+});
+export type BridgeAgentWytunnelInstance = z.infer<typeof bridgeAgentWytunnelInstanceSchema>;
+
 export const bridgeAgentStatusSchema = z.object({
   bridgeId: z.string().min(1).max(200),
   agentVersion: z.string().min(1).max(64),
   apiVersion: z.literal(BRIDGE_AGENT_API_VERSION),
   observedAt: z.string().max(64),
   frps: z.object({
+    // False when the operator disabled frps on a WyTunnel-only bridge (0 RAM/CPU).
+    enabled: z.boolean().optional(),
     // True only when both frps reads succeeded. When false, `proxies` is
     // empty and proves nothing about the routes.
     reachable: z.boolean(),
@@ -106,6 +120,8 @@ export const bridgeAgentStatusSchema = z.object({
   // Read per entry (`readProxies`): one unreadable entry, typically a
   // foreign or misconfigured proxy, must not make the whole status unusable.
   proxies: z.array(z.unknown()).max(4_096),
+  // Optional WyTunnel client instances discovered on the bridge host.
+  wytunnel: z.array(z.unknown()).max(4_096).optional(),
   errors: z
     .array(z.object({ code: bridgeAgentErrorCodeSchema, message: z.string().max(500) }))
     .max(32),
@@ -123,6 +139,7 @@ export type BridgeAgentPollOutcome =
       kind: "ok";
       agentVersion: string;
       agentApiVersion: number;
+      frpsEnabled?: boolean;
       frpsReachable: boolean;
       frpsVersion: string | null;
       hostMetrics?: BridgeMetrics["host"];
@@ -130,13 +147,16 @@ export type BridgeAgentPollOutcome =
       agentLatencyMs?: number;
       frpsTls?: BridgeMetrics["frpsTls"];
       proxies: readonly BridgeAgentProxy[];
+      wytunnelInstances?: readonly BridgeAgentWytunnelInstance[];
       /**
        * Proxy names of entries that were reported but could not be read.
        * A route with one of these names is left unobserved (Unknown), never
        * marked offline.
        */
       unreadableProxyIds: readonly string[];
-      /** `PROXY_ENTRY_INVALID` when entries were dropped, else the agent's first error. */
+      /** Route UUIDs of malformed `wytunnel` entries kept Unknown instead of offline. */
+      unreadableWytunnelRouteIds?: readonly string[];
+      /** `PROXY_ENTRY_INVALID` / `WYTUNNEL_ENTRY_INVALID` when entries were dropped, else the agent's first error. */
       errorCode: string | null;
     }
   | { kind: "down"; errorCode: BridgeAgentPollError }
@@ -292,6 +312,35 @@ const readProxies = (
   return { proxies, unreadableProxyIds, dropped };
 };
 
+const readWytunnelInstances = (
+  entries: readonly unknown[] | undefined,
+): {
+  instances: BridgeAgentWytunnelInstance[];
+  unreadableRouteIds: string[];
+  dropped: number;
+} => {
+  if (!entries) return { instances: [], unreadableRouteIds: [], dropped: 0 };
+  const instances: BridgeAgentWytunnelInstance[] = [];
+  const unreadableRouteIds: string[] = [];
+  let dropped = 0;
+  for (const entry of entries) {
+    const parsed = bridgeAgentWytunnelInstanceSchema.safeParse(entry);
+    if (parsed.success) {
+      instances.push(parsed.data);
+      continue;
+    }
+    dropped += 1;
+    const rid =
+      typeof entry === "object" && entry !== null
+        ? (entry as { routeId?: unknown }).routeId
+        : undefined;
+    if (typeof rid === "string" && rid.length > 0 && rid.length <= 200) {
+      unreadableRouteIds.push(rid);
+    }
+  }
+  return { instances, unreadableRouteIds, dropped };
+};
+
 const reportedApiVersion = (body: unknown): number | null => {
   if (typeof body !== "object" || body === null) return null;
   const value = (body as { apiVersion?: unknown }).apiVersion;
@@ -368,10 +417,12 @@ export const classifyBridgeAgentStatus = (
   const read = status.frps.reachable
     ? readProxies(status.proxies)
     : { proxies: [], unreadableProxyIds: [], dropped: 0 };
+  const wytunnelRead = readWytunnelInstances(status.wytunnel);
   return {
     kind: "ok",
     agentVersion: status.agentVersion,
     agentApiVersion: status.apiVersion,
+    ...(status.frps.enabled !== undefined ? { frpsEnabled: status.frps.enabled } : {}),
     frpsReachable: status.frps.reachable,
     frpsVersion: status.frps.version,
     ...(status.hostMetrics ? { hostMetrics: status.hostMetrics } : {}),
@@ -380,8 +431,17 @@ export const classifyBridgeAgentStatus = (
     // An unreachable frps reports an empty list that means "unknown"; it is
     // dropped here so no caller can mistake it for "every route is gone".
     proxies: read.proxies,
+    ...(status.wytunnel !== undefined ? { wytunnelInstances: wytunnelRead.instances } : {}),
     unreadableProxyIds: read.unreadableProxyIds,
-    errorCode: read.dropped > 0 ? "PROXY_ENTRY_INVALID" : (status.errors[0]?.code ?? null),
+    ...(wytunnelRead.unreadableRouteIds.length > 0
+      ? { unreadableWytunnelRouteIds: wytunnelRead.unreadableRouteIds }
+      : {}),
+    errorCode:
+      read.dropped > 0
+        ? "PROXY_ENTRY_INVALID"
+        : wytunnelRead.dropped > 0
+          ? "WYTUNNEL_ENTRY_INVALID"
+          : (status.errors[0]?.code ?? null),
   };
 };
 

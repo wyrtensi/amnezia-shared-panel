@@ -2,7 +2,7 @@
 
 import * as React from "react";
 import Link from "next/link";
-import { ArrowDownUp, Cable, Cpu, Gauge, Pencil, Plus, Trash2 } from "lucide-react";
+import { ArrowDownUp, Cable, Cpu, Gauge, Pencil, Plus, RefreshCw, SlidersHorizontal, Trash2 } from "lucide-react";
 import { toast } from "sonner";
 import {
   BRIDGE_DEFAULT_CONTROL_TCP_PORT,
@@ -10,12 +10,20 @@ import {
   BRIDGE_DEFAULT_UDP_PORT_START,
   type Bridge,
   type BridgeFrpsTlsStatus,
+  type BridgeRouteTransport,
 } from "@amnezia/contracts";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent } from "@/components/ui/card";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
+import {
+  Select,
+  SelectContent,
+  SelectItem,
+  SelectTrigger,
+  SelectValue,
+} from "@/components/ui/select";
 import { Switch } from "@/components/ui/switch";
 import { Skeleton } from "@/components/ui/skeleton";
 import { Callout } from "@/components/ui/hint";
@@ -40,12 +48,18 @@ import {
 } from "@/components/admin/node-metrics";
 import { BridgeAgentUpdateFacts, UpdateAgentDialog } from "@/components/admin/bridge-agent-update";
 import { BridgeDownloadBadge } from "@/components/admin/bridge-route-view";
+import {
+  BridgeRouteTransportStrip,
+  BridgeTransportDialog,
+  type EditableRouteTransportTarget,
+} from "@/components/admin/bridge-transport-dialog";
 import { useAdminData } from "@/components/admin/admin-data";
 import type { BridgeInfra } from "@/components/admin/use-bridge-infra";
-import { createBridge, deleteBridge, renameBridge } from "@/lib/bridge-api";
+import { createBridge, deleteBridge, renameBridge, type Requester } from "@/lib/bridge-api";
 import {
   BRIDGES_ANCHOR,
   bridgeCardAnchor,
+  bridgeSectionHref,
   describeBridgeError,
   nodeCardAnchor,
   nodeRouteEditorHref,
@@ -97,6 +111,10 @@ export function BridgeCardView({
   onUpdateAgent,
   onToggleReachability,
   reachabilityBusy,
+  onOpenNode,
+  onEditRouteTransport,
+  latestWytunnelVersion,
+  embedded,
 }: {
   bridge: Bridge;
   t: Translate;
@@ -106,11 +124,15 @@ export function BridgeCardView({
   onUpdateAgent?: () => void;
   onToggleReachability?: (enabled: boolean) => void;
   reachabilityBusy?: boolean;
+  onOpenNode?: (nodeId: string) => void;
+  onEditRouteTransport?: (target: EditableRouteTransportTarget) => void;
+  latestWytunnelVersion?: string | null;
+  /** Render card body directly without outer Card wrapper (for dialogs). */
+  embedded?: boolean;
 }) {
   const free = Math.max(0, bridge.capacity - bridge.heldPorts);
-  return (
-    <Card id={bridgeCardAnchor(bridge.id)} tabIndex={-1} className="scroll-mt-4">
-      <CardContent className="space-y-3 p-4">
+  const content = (
+    <>
         <div className="flex items-start justify-between gap-2">
           <div className="flex min-w-0 items-start gap-2.5">
             <span className={cn(
@@ -121,9 +143,17 @@ export function BridgeCardView({
             </span>
             <div className="min-w-0 space-y-1">
               <p className="break-words font-medium leading-tight">{bridge.name}</p>
-              <Badge variant={STATUS_VARIANT[bridge.managementStatus]}>
-                {t(`bridge.status.${bridge.managementStatus}`)}
-              </Badge>
+              <div className="flex flex-wrap items-center gap-1">
+                <Badge variant={STATUS_VARIANT[bridge.managementStatus]}>
+                  {t(`bridge.status.${bridge.managementStatus}`)}
+                </Badge>
+                {bridge.defaultTransport === "wytunnel" ? (
+                  <Badge variant="secondary">{t("bridge.transport.wytunnel")}</Badge>
+                ) : null}
+                {bridge.frpsEnabled === false ? (
+                  <Badge variant="outline">{t("bridge.frps.disabledBadge")}</Badge>
+                ) : null}
+              </div>
             </div>
           </div>
           <div className="flex shrink-0 items-center gap-1">
@@ -213,29 +243,75 @@ export function BridgeCardView({
                   key={route.id}
                   className="flex flex-wrap items-center gap-x-2 gap-y-1 rounded-md bg-muted/50 px-2 py-1 text-xs"
                 >
-                  <a
-                    href={`#${nodeCardAnchor(route.nodeId)}`}
-                    className="min-w-0 break-words font-medium text-primary underline-offset-2 hover:underline"
-                  >
-                    {route.nodeName}
-                  </a>
+                  {onOpenNode ? (
+                    <button
+                      type="button"
+                      onClick={() => onOpenNode(route.nodeId)}
+                      className="min-w-0 cursor-pointer break-words text-left font-medium text-primary underline-offset-2 hover:underline"
+                    >
+                      {route.nodeName}
+                    </button>
+                  ) : (
+                    <a
+                      href={`#${nodeCardAnchor(route.nodeId)}`}
+                      className="min-w-0 break-words font-medium text-primary underline-offset-2 hover:underline"
+                    >
+                      {route.nodeName}
+                    </a>
+                  )}
                   <span className="font-mono">:{route.publicUdpPort}</span>
                   <Badge variant={ROUTE_STATE_VARIANT[route.state]}>
                     {t(`bridge.state.${route.state}`)}
                   </Badge>
-                  {/* Registration (frps) and the end-to-end AWG path are
+                  <BridgeRouteTransportStrip
+                    transport={route.transport}
+                    transportPort={route.transportPort}
+                    transportConfig={route.transportConfig}
+                    telemetry={route.telemetry}
+                    latestWytunnelVersion={latestWytunnelVersion}
+                    t={t}
+                  />
+                  {/* Registration (frps or wytunnel) and the end-to-end AWG path are
                       separate evidence from management reachability above. */}
                   <Badge
                     variant={registrationTone(route.registration.status)}
-                    title={t("bridge.route.frpc")}
+                    title={
+                      route.transport === "wytunnel"
+                        ? t("bridge.route.wytunnel")
+                        : t("bridge.route.frpc")
+                    }
                   >
-                    {t("bridge.route.frpc")}: {t(`bridge.obs.${route.registration.status}`)}
+                    {route.transport === "wytunnel"
+                      ? t("bridge.route.wytunnel")
+                      : t("bridge.route.frpc")}
+                    : {t(`bridge.obs.${route.registration.status}`)}
                   </Badge>
                   <Badge variant={verificationTone(route.verification)}>
                     {t("bridge.route.awg")}: {t(verificationLabelKey(route.verification))}
                   </Badge>
                   <BridgeDownloadBadge verification={route.verification} t={t} />
                   <EvidenceTime at={verificationTime(route.verification)} lang={lang} />
+                  {onEditRouteTransport ? (
+                    <Button
+                      type="button"
+                      variant="ghost"
+                      size="sm"
+                      className="h-6 gap-1 px-1.5 text-[11px]"
+                      onClick={() =>
+                        onEditRouteTransport({
+                          id: route.id,
+                          publicUdpPort: route.publicUdpPort,
+                          transport: route.transport,
+                          transportPort: route.transportPort,
+                          transportConfig: route.transportConfig,
+                          label: `${route.nodeName} :${route.publicUdpPort}`,
+                        })
+                      }
+                    >
+                      <SlidersHorizontal className="size-3" />
+                      {t("bridge.transport.configure")}
+                    </Button>
+                  ) : null}
                   <Link
                     href={nodeRouteEditorHref(route.nodeId)}
                     prefetch={false}
@@ -273,7 +349,16 @@ export function BridgeCardView({
             </div>
           </details>
         ) : null}
-      </CardContent>
+    </>
+  );
+
+  if (embedded) {
+    return <div className="space-y-3">{content}</div>;
+  }
+
+  return (
+    <Card id={bridgeCardAnchor(bridge.id)} tabIndex={-1} className="scroll-mt-4">
+      <CardContent className="space-y-3 p-4">{content}</CardContent>
     </Card>
   );
 }
@@ -424,11 +509,13 @@ export function BridgeManagementView({
   const when = (iso: string | null) =>
     iso ? formatDateTime(iso, lang) : t("bridge.mgmt.never");
   const frps =
-    management.frpsReachable === null
-      ? t("bridge.mgmt.frpsUnknown")
-      : management.frpsReachable
-        ? t("bridge.mgmt.frpsReachable", { version: management.frpsVersion ?? "frps" })
-        : t("bridge.mgmt.frpsUnreachable");
+    bridge.frpsEnabled === false
+      ? t("bridge.frps.disabledBadge")
+      : management.frpsReachable === null
+        ? t("bridge.mgmt.frpsUnknown")
+        : management.frpsReachable
+          ? t("bridge.mgmt.frpsReachable", { version: management.frpsVersion ?? "frps" })
+          : t("bridge.mgmt.frpsUnreachable");
   return (
     <dl className="space-y-1.5 text-xs text-muted-foreground">
       <div className="flex items-baseline justify-between gap-3 rounded-md border border-border/60 bg-well px-2 py-1 shadow-[var(--inset-shadow)]">
@@ -474,11 +561,48 @@ export function BridgesSection({ infra, reachabilityBusy, onSetReachability }: {
   const [renaming, setRenaming] = React.useState<Bridge | null>(null);
   const [deleting, setDeleting] = React.useState<Bridge | null>(null);
   const [updating, setUpdating] = React.useState<Bridge | null>(null);
+  const [editingRouteTransport, setEditingRouteTransport] =
+    React.useState<EditableRouteTransportTarget | null>(null);
+  const [refreshingWt, setRefreshingWt] = React.useState(false);
+
+  const handleRefreshWytunnel = async () => {
+    setRefreshingWt(true);
+    try {
+      const rel = await infra.refreshWytunnelRelease?.();
+      if (rel) {
+        toast.success(t("bridge.wytunnel.releaseRefreshed", { tag: rel.tag }));
+      }
+    } finally {
+      setRefreshingWt(false);
+    }
+  };
 
   return (
     <section id={BRIDGES_ANCHOR} aria-labelledby="bridges-title" tabIndex={-1} className="min-w-0 scroll-mt-4 space-y-3">
       <div className="flex flex-wrap items-center gap-2">
         <h3 id="bridges-title" className="mr-auto text-base font-semibold">{t("bridge.title")}</h3>
+        {infra.wytunnelRelease ? (
+          <div className="inline-flex items-center gap-1 rounded-md border border-border/70 bg-well px-2 py-0.5 text-xs">
+            <a
+              href={infra.wytunnelRelease.htmlUrl}
+              target="_blank"
+              rel="noreferrer noopener"
+              className="font-mono text-foreground underline-offset-2 hover:underline"
+            >
+              {t("bridge.wytunnel.releaseLabel", { tag: infra.wytunnelRelease.tag })}
+            </a>
+            <button
+              type="button"
+              disabled={refreshingWt}
+              aria-label={t("bridge.wytunnel.releaseRefreshAria")}
+              title={t("bridge.wytunnel.releaseRefreshAria")}
+              onClick={() => void handleRefreshWytunnel()}
+              className="rounded p-0.5 text-muted-foreground hover:text-foreground disabled:opacity-50"
+            >
+              <RefreshCw className={cn("size-3", refreshingWt && "animate-spin")} />
+            </button>
+          </div>
+        ) : null}
         <Button size="sm" onClick={() => setShowAdd(true)}>
           <Plus /> {t("bridge.add")}
         </Button>
@@ -505,9 +629,11 @@ export function BridgesSection({ infra, reachabilityBusy, onSetReachability }: {
               bridge={bridge}
               t={t}
               lang={lang}
+              latestWytunnelVersion={infra.wytunnelRelease?.version}
               onRename={() => setRenaming(bridge)}
               onDelete={() => setDeleting(bridge)}
               onUpdateAgent={() => setUpdating(bridge)}
+              onEditRouteTransport={setEditingRouteTransport}
               reachabilityBusy={reachabilityBusy}
               onToggleReachability={(enabled) => void onSetReachability(bridge.id, enabled)}
             />
@@ -527,6 +653,12 @@ export function BridgesSection({ infra, reachabilityBusy, onSetReachability }: {
         onDone={infra.reload}
         request={request}
       />
+      <BridgeTransportDialog
+        route={editingRouteTransport}
+        onClose={() => setEditingRouteTransport(null)}
+        onDone={infra.reload}
+        request={request}
+      />
       <UpdateAgentDialog
         bridge={updating}
         onClose={() => setUpdating(null)}
@@ -540,6 +672,136 @@ export function BridgesSection({ infra, reachabilityBusy, onSetReachability }: {
         request={request}
       />
     </section>
+  );
+}
+
+export type BridgeDetailDialogProps = {
+  bridge: Bridge | null;
+  onClose: () => void;
+  onDone: () => Promise<void>;
+  request: Requester;
+  reachabilityBusy?: boolean;
+  onSetReachability?: (bridgeId: string, enabled: boolean) => Promise<void>;
+  onOpenNode?: (nodeId: string) => void;
+};
+
+/**
+ * Contextual bridge detail modal for the Overview topology map.
+ * Embeds `BridgeCardView` and wires rename, agent update, and delete dialogs.
+ */
+export function BridgeDetailDialog({
+  bridge,
+  onClose,
+  onDone,
+  request,
+  reachabilityBusy,
+  onSetReachability,
+  onOpenNode,
+}: BridgeDetailDialogProps) {
+  const { t, lang } = useT();
+  const [renaming, setRenaming] = React.useState(false);
+  const [deleting, setDeleting] = React.useState(false);
+  const [updating, setUpdating] = React.useState(false);
+  const [editingRouteTransport, setEditingRouteTransport] =
+    React.useState<EditableRouteTransportTarget | null>(null);
+
+  React.useEffect(() => {
+    if (!bridge) {
+      setRenaming(false);
+      setDeleting(false);
+      setUpdating(false);
+      setEditingRouteTransport(null);
+    }
+  }, [bridge]);
+
+  if (!bridge) return null;
+
+  const hasSubDialog = renaming || deleting || updating || Boolean(editingRouteTransport);
+
+  const handleDeleteDone = async () => {
+    await onDone();
+    onClose();
+  };
+
+  return (
+    <>
+      <Dialog
+        open={Boolean(bridge)}
+        onOpenChange={(next) => {
+          if (!next && !hasSubDialog) onClose();
+        }}
+      >
+        <DialogContent
+          className="max-h-[90vh] overflow-y-auto sm:max-w-xl"
+          onInteractOutside={(e) => {
+            if (hasSubDialog) e.preventDefault();
+          }}
+          onEscapeKeyDown={(e) => {
+            if (hasSubDialog) e.preventDefault();
+          }}
+        >
+          <DialogHeader>
+            <DialogTitle className="flex min-w-0 items-center gap-2 pr-6">
+              <Cable aria-hidden className="size-4 shrink-0 text-primary" />
+              <span className="truncate">{bridge.name}</span>
+            </DialogTitle>
+            <DialogDescription className="flex flex-wrap items-center justify-between gap-2 text-xs">
+              <span className="font-mono">{bridge.publicIpv4}</span>
+              <Link
+                href={bridgeSectionHref}
+                prefetch={false}
+                className="inline-flex shrink-0 items-center gap-1 text-primary underline-offset-2 hover:underline"
+              >
+                {t("ov.map.openBridges")}
+              </Link>
+            </DialogDescription>
+          </DialogHeader>
+
+          <BridgeCardView
+            embedded
+            bridge={bridge}
+            t={t}
+            lang={lang}
+            onRename={() => setRenaming(true)}
+            onDelete={() => setDeleting(true)}
+            onUpdateAgent={() => setUpdating(true)}
+            onEditRouteTransport={setEditingRouteTransport}
+            onOpenNode={onOpenNode}
+            reachabilityBusy={reachabilityBusy}
+            onToggleReachability={
+              onSetReachability
+                ? (enabled) => void onSetReachability(bridge.id, enabled)
+                : undefined
+            }
+          />
+        </DialogContent>
+      </Dialog>
+
+      <RenameBridgeDialog
+        bridge={renaming ? bridge : null}
+        onClose={() => setRenaming(false)}
+        onDone={onDone}
+        request={request}
+      />
+      <BridgeTransportDialog
+        route={editingRouteTransport}
+        onClose={() => setEditingRouteTransport(null)}
+        onDone={onDone}
+        request={request}
+      />
+      <UpdateAgentDialog
+        bridge={updating ? bridge : null}
+        onClose={() => setUpdating(false)}
+        onDone={onDone}
+        request={request}
+      />
+      <DeleteBridgeDialog
+        bridge={deleting ? bridge : null}
+        onClose={() => setDeleting(false)}
+        onDone={handleDeleteDone}
+        request={request}
+      />
+    </>
   );
 }
 
@@ -559,6 +821,9 @@ function AddBridgeDialog({
   const [name, setName] = React.useState("");
   const [ip, setIp] = React.useState("");
   const [panelDomain, setPanelDomain] = React.useState("");
+  const [defaultTransport, setDefaultTransport] =
+    React.useState<BridgeRouteTransport>("wytunnel");
+  const [frpsEnabled, setFrpsEnabled] = React.useState(true);
   const [controlPort, setControlPort] = React.useState(
     String(BRIDGE_DEFAULT_CONTROL_TCP_PORT),
   );
@@ -572,6 +837,8 @@ function AddBridgeDialog({
     setName("");
     setIp("");
     setPanelDomain("");
+    setDefaultTransport("wytunnel");
+    setFrpsEnabled(true);
     setControlPort(String(BRIDGE_DEFAULT_CONTROL_TCP_PORT));
     setUdpStart(String(BRIDGE_DEFAULT_UDP_PORT_START));
     setUdpEnd(String(BRIDGE_DEFAULT_UDP_PORT_END));
@@ -592,6 +859,8 @@ function AddBridgeDialog({
         controlTcpPort: Number(controlPort),
         udpPortStart: Number(udpStart),
         udpPortEnd: Number(udpEnd),
+        defaultTransport,
+        frpsEnabled,
         ...(trimmedDomain ? { panelDnsHostname: trimmedDomain } : {}),
       });
       toast.success(t("bridge.added"));
@@ -643,6 +912,42 @@ function AddBridgeDialog({
               placeholder={t("bridge.panelDnsHostnamePlaceholder")}
               value={panelDomain}
               onChange={(event) => setPanelDomain(event.target.value)}
+            />
+          </div>
+          <div className="space-y-1.5">
+            <Label>{t("bridge.transport.defaultLabel")}</Label>
+            <Select
+              value={defaultTransport}
+              onValueChange={(value) => {
+                const next = value as BridgeRouteTransport;
+                setDefaultTransport(next);
+                if (next === "frp_tcp") setFrpsEnabled(true);
+              }}
+            >
+              <SelectTrigger>
+                <SelectValue />
+              </SelectTrigger>
+              <SelectContent>
+                <SelectItem value="wytunnel">{t("bridge.transport.wytunnel")}</SelectItem>
+                <SelectItem value="frp_tcp" disabled={!frpsEnabled}>
+                  {t("bridge.transport.frp_tcp")}
+                </SelectItem>
+              </SelectContent>
+            </Select>
+          </div>
+          <div className="flex items-start justify-between gap-2 rounded-md border bg-well px-2.5 py-2 text-xs">
+            <div className="space-y-0.5">
+              <p className="font-medium">{t("bridge.frps.enabledLabel")}</p>
+              <p className="text-muted-foreground">{t("bridge.frps.enabledHint")}</p>
+            </div>
+            <Switch
+              checked={frpsEnabled}
+              onCheckedChange={(checked) => {
+                setFrpsEnabled(checked);
+                if (!checked && defaultTransport === "frp_tcp") {
+                  setDefaultTransport("wytunnel");
+                }
+              }}
             />
           </div>
           <details className="rounded-md border px-2 py-1.5">
@@ -719,14 +1024,19 @@ function RenameBridgeDialog({
   const { t } = useT();
   const [name, setName] = React.useState("");
   const [panelDomain, setPanelDomain] = React.useState("");
+  const [defaultTransport, setDefaultTransport] =
+    React.useState<BridgeRouteTransport>("frp_tcp");
+  const [frpsEnabled, setFrpsEnabled] = React.useState(true);
   const [busy, setBusy] = React.useState(false);
   const [error, setError] = React.useState<string | null>(null);
 
   React.useEffect(() => {
     setName(bridge?.name ?? "");
     setPanelDomain(bridge?.panelDnsHostname ?? bridge?.panelDns?.hostname ?? "");
+    setDefaultTransport(bridge?.defaultTransport ?? "frp_tcp");
+    setFrpsEnabled(bridge?.frpsEnabled ?? true);
     setError(null);
-  }, [bridge]);
+  }, [bridge?.id]);
 
   const submit = async (event: React.FormEvent) => {
     event.preventDefault();
@@ -740,6 +1050,7 @@ function RenameBridgeDialog({
         bridge.id,
         name.trim(),
         trimmedDomain ? trimmedDomain : null,
+        { defaultTransport, frpsEnabled },
       );
       toast.success(t("bridge.renamed"));
       onClose();
@@ -753,7 +1064,7 @@ function RenameBridgeDialog({
 
   return (
     <Dialog open={Boolean(bridge)} onOpenChange={(next) => !next && onClose()}>
-      <DialogContent className="sm:max-w-sm">
+      <DialogContent className="sm:max-w-md">
         <DialogHeader>
           <DialogTitle>{t("bridge.rename")}</DialogTitle>
         </DialogHeader>
@@ -779,6 +1090,63 @@ function RenameBridgeDialog({
               value={panelDomain}
               onChange={(event) => setPanelDomain(event.target.value)}
             />
+          </div>
+          <div className="space-y-1.5">
+            <Label>{t("bridge.transport.defaultLabel")}</Label>
+            <Select
+              value={defaultTransport}
+              onValueChange={(value) => {
+                const next = value as BridgeRouteTransport;
+                setDefaultTransport(next);
+                if (next === "frp_tcp") setFrpsEnabled(true);
+              }}
+            >
+              <SelectTrigger>
+                <SelectValue />
+              </SelectTrigger>
+              <SelectContent>
+                <SelectItem value="wytunnel">{t("bridge.transport.wytunnel")}</SelectItem>
+                <SelectItem value="frp_tcp" disabled={!frpsEnabled}>
+                  {t("bridge.transport.frp_tcp")}
+                </SelectItem>
+              </SelectContent>
+            </Select>
+          </div>
+          <div className="space-y-2 rounded-md border bg-well px-2.5 py-2 text-xs">
+            <div className="flex items-start justify-between gap-2">
+              <div className="space-y-0.5">
+                <p className="font-medium">{t("bridge.frps.enabledLabel")}</p>
+                <p className="text-muted-foreground">{t("bridge.frps.enabledHint")}</p>
+              </div>
+              <Switch
+                checked={frpsEnabled}
+                onCheckedChange={(checked) => {
+                  setFrpsEnabled(checked);
+                  if (!checked && defaultTransport === "frp_tcp") {
+                    setDefaultTransport("wytunnel");
+                  }
+                }}
+              />
+            </div>
+            {!frpsEnabled ? (
+              <div className="space-y-1 border-t border-border/60 pt-2">
+                <p className="text-muted-foreground">{t("bridge.frps.disabledHint")}</p>
+                <CommandBlock
+                  label={t("bridge.wytunnel.disableFrpsCmd")}
+                  command="sudo bash /opt/amnezia-bridge/scripts/toggle-frps.sh --disable"
+                  hideLabel
+                />
+              </div>
+            ) : bridge && !bridge.frpsEnabled ? (
+              <div className="space-y-1 border-t border-border/60 pt-2">
+                <p className="text-muted-foreground">{t("bridge.frps.enableCmdHint")}</p>
+                <CommandBlock
+                  label={t("bridge.frps.enabledLabel")}
+                  command="sudo bash /opt/amnezia-bridge/scripts/toggle-frps.sh --enable"
+                  hideLabel
+                />
+              </div>
+            ) : null}
           </div>
           {error ? (
             <Callout tone="danger" className="text-xs">

@@ -4,18 +4,24 @@ import {
   type Bridge,
   type BridgeAgentUpdateView,
   type BridgeEligibility,
+  type BridgeRouteTransport,
   type CreateBridgeRequest,
   type EndpointBridgeMode,
   type InfrastructureItem,
+  type NodeBridgeRoute,
   type NodeBridgeRoutes,
+  type PrepareBridgeRouteRequest,
   type PrepareBridgeRouteResult,
   type RequestBridgeAgentUpdateResult,
   type ReleaseBridgeRouteResult,
+  type UpdateBridgeRequest,
+  type UpdateBridgeRouteTransportRequest,
   type VerifyBridgeRouteResult,
   type NodeEndpointAssignment,
   type NodePublicEndpointMutationResult,
   type UpdateNodeRequest,
   type DeleteBridgeResult,
+  type WytunnelRelease,
 } from "@amnezia/contracts";
 import { ApiClientError } from "@/lib/api";
 
@@ -46,14 +52,27 @@ export const renameBridge = (
   id: string,
   name: string,
   panelDnsHostname?: string | null,
-) =>
-  request<Bridge>(
-    `/api/admin/vpn-bridges/${id}`,
-    json(
-      "PATCH",
-      panelDnsHostname === undefined ? { name } : { name, panelDnsHostname },
-    ),
-  );
+  options?: {
+    defaultTransport?: BridgeRouteTransport;
+    frpsEnabled?: boolean;
+  },
+) => {
+  const payload: UpdateBridgeRequest = {
+    name,
+    ...(panelDnsHostname === undefined ? {} : { panelDnsHostname }),
+    ...(options?.defaultTransport !== undefined
+      ? { defaultTransport: options.defaultTransport }
+      : {}),
+    ...(options?.frpsEnabled !== undefined ? { frpsEnabled: options.frpsEnabled } : {}),
+  };
+  return request<Bridge>(`/api/admin/vpn-bridges/${id}`, json("PATCH", payload));
+};
+
+export const updateBridgeSettings = (
+  request: Requester,
+  id: string,
+  patch: UpdateBridgeRequest,
+) => request<Bridge>(`/api/admin/vpn-bridges/${id}`, json("PATCH", patch));
 
 export const deleteBridge = (request: Requester, id: string) =>
   request<DeleteBridgeResult>(`/api/admin/vpn-bridges/${id}`, { method: "DELETE" });
@@ -80,10 +99,25 @@ export const prepareRoute = (
   nodeId: string,
   bridgeId: string,
   publicUdpPort?: number,
+  options?: Pick<PrepareBridgeRouteRequest, "transport" | "transportPort" | "transportConfig">,
 ) =>
   request<PrepareBridgeRouteResult>(
     `/api/admin/nodes/${nodeId}/vpn-bridge-routes`,
-    json("POST", publicUdpPort === undefined ? { bridgeId } : { bridgeId, publicUdpPort }),
+    json("POST", {
+      bridgeId,
+      ...(publicUdpPort === undefined ? {} : { publicUdpPort }),
+      ...(options ?? {}),
+    }),
+  );
+
+export const updateRouteTransport = (
+  request: Requester,
+  routeId: string,
+  body: UpdateBridgeRouteTransportRequest,
+) =>
+  request<NodeBridgeRoute>(
+    `/api/admin/vpn-bridge-routes/${routeId}/transport`,
+    json("PATCH", body),
   );
 
 /**
@@ -188,3 +222,9 @@ export const fetchTestConfig = async (
     ),
   };
 };
+
+export const getWytunnelRelease = (request: Requester) =>
+  request<WytunnelRelease>("/api/admin/wytunnel/release");
+
+export const refreshWytunnelRelease = (request: Requester) =>
+  request<WytunnelRelease>("/api/admin/wytunnel/release/refresh", { method: "POST" });

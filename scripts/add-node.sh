@@ -39,6 +39,10 @@
 #                              derived from the node's available memory)
 #   --protocol <awg2|awg3>     fallback protocol on the node record
 #   --enabled-protocols <list> comma-separated, offered to the key wizard
+#   --exit-ip <ipv4>           additional public Exit IPv4 to print in post-rollout
+#                              CLI onboarding hints (repeatable; does not
+#                              register Exit IPs automatically)
+#   --update-repo <repo>       install agent updater for this GHCR repository
 #   --ssh-user <user>          SSH user on the node (default: NODE_SSH_USER)
 #   --config <path>            config file (default: scripts/add-node.env)
 #   --skip-register            deploy the node but do not register it
@@ -48,7 +52,8 @@ set -euo pipefail
 REPO_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 CONFIG="${REPO_ROOT}/scripts/add-node.env"
 NODE_HOST="" NODE_NAME="" NODE_REGION="" PUBLIC_HOST=""
-MAX_PEERS="" PROTOCOL="" ENABLED_PROTOCOLS="" SSH_USER=""
+MAX_PEERS="" PROTOCOL="" ENABLED_PROTOCOLS="" SSH_USER="" UPDATE_REPO=""
+EXIT_IPS=()
 SKIP_REGISTER=0 DRY_RUN=0
 
 die() { echo "add-node: $*" >&2; exit 1; }
@@ -71,6 +76,8 @@ while [ $# -gt 0 ]; do
     --max-peers) MAX_PEERS="${2:?--max-peers needs a value}"; shift 2 ;;
     --protocol) PROTOCOL="${2:?--protocol needs a value}"; shift 2 ;;
     --enabled-protocols) ENABLED_PROTOCOLS="${2:?--enabled-protocols needs a value}"; shift 2 ;;
+    --exit-ip) EXIT_IPS+=("${2:?--exit-ip needs a value}"); shift 2 ;;
+    --update-repo) UPDATE_REPO="${2:?--update-repo needs a value}"; shift 2 ;;
     --ssh-user) SSH_USER="${2:?--ssh-user needs a value}"; shift 2 ;;
     --config) CONFIG="${2:?--config needs a value}"; shift 2 ;;
     --skip-register) SKIP_REGISTER=1; shift ;;
@@ -103,6 +110,7 @@ NODE_DIR="${NODE_DIR:-/opt/amnezia-panel-node}"
 NODE_WEIGHT="${NODE_WEIGHT:-100}"
 
 SSH_USER="${SSH_USER:-${NODE_SSH_USER:-root}}"
+UPDATE_REPO="${UPDATE_REPO:-${NODE_AGENT_UPDATE_REPO:-}}"
 NODE_REGION="${NODE_REGION:-$NODE_NAME}"
 PUBLIC_HOST="${PUBLIC_HOST:-$NODE_HOST}"
 MAX_PEERS="${MAX_PEERS:-${NODE_MAX_PEERS:-}}"
@@ -269,6 +277,7 @@ sed -i \
   .env
 chown -R root:root .
 chmod 700 scripts/*.sh
+chmod 644 systemd/* 2>/dev/null || true
 chmod 600 .env
 chmod 640 secrets/node-agent-api-key
 REMOTE
@@ -341,6 +350,12 @@ fi
 # the extra run starts a throwaway container whose memory is still held when
 # deploy re-checks the RAM gate, which fails the gate on a small node.
 node_do "cd '$NODE_DIR' && sh scripts/deploy.sh"
+if [ -n "$UPDATE_REPO" ]; then
+  node_do "cd '$NODE_DIR' && NODE_AGENT_UPDATE_REPO='$UPDATE_REPO' sh scripts/install-host-services.sh"
+else
+  node_do "cd '$NODE_DIR' && sh scripts/install-host-services.sh"
+fi
+node_do "cd '$NODE_DIR' && docker compose --env-file .env -f compose.yaml up -d --no-deps --no-build node-agent"
 
 # --- 7. Supervised tunnel on the panel host ---------------------------------
 say "[7/8] Opening the panel -> node tunnel"
@@ -390,6 +405,7 @@ RestartSec=5
 [Install]
 WantedBy=multi-user.target
 UNITFILE
+chmod 0644 "/etc/systemd/system/${UNIT}.service"
 systemctl daemon-reload
 systemctl enable --now "${UNIT}"
 systemctl restart "${UNIT}"
@@ -457,11 +473,16 @@ say "Done."
 # nothing else in the output would say so. Better here than the first time
 # someone presses Update and reads that the node cannot update itself.
 if [ "$DRY_RUN" != 1 ]; then
-  note "this node cannot update its own agent yet. The host-side updater is a"
-  note "separate one-time step because it needs the repository YOUR panel"
-  note "publishes to. On the node, from its node directory:"
-  note "  sudo NODE_AGENT_UPDATE_REPO=<your-repo>/node-agent \\"
-  note "       bash scripts/install-agent-updater.sh"
-  note "  docker compose --env-file .env -f compose.yaml up -d --no-deps node-agent"
+  if [ "${#EXIT_IPS[@]}" -gt 0 ]; then
+    note "Requested Exit IPs to configure via admin node topology / CLI: ${EXIT_IPS[*]}"
+  fi
+  if [ -z "$UPDATE_REPO" ]; then
+    note "this node cannot update its own agent yet. The host-side updater is a"
+    note "separate one-time step because it needs the repository YOUR panel"
+    note "publishes to. On the node, from its node directory:"
+    note "  sudo NODE_AGENT_UPDATE_REPO=<your-repo>/node-agent \\"
+    note "       bash scripts/install-agent-updater.sh"
+    note "  docker compose --env-file .env -f compose.yaml up -d --no-deps node-agent"
+  fi
 fi
 [ "$DRY_RUN" = 1 ] || cli nodes

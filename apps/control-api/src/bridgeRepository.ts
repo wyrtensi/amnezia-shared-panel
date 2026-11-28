@@ -1,14 +1,18 @@
 import { randomUUID } from "node:crypto";
-import { and, asc, desc, eq, inArray, or, sql, type SQL } from "drizzle-orm";
+import { and, asc, desc, eq, inArray, ne, or, sql, type SQL } from "drizzle-orm";
 import {
   isPublishableAgentImage,
   BRIDGE_ROUTE_CANDIDATE_CHECK_JOB_TYPE,
   bridgeFrpProxyName,
   bridgeProbeLevelsSchema,
+  bridgeRouteTelemetrySchema,
+  deriveWytunnelTransportPort,
   nodeServedProtocols,
+  normalizeWytunnelTransportConfig,
   probeCapabilityInputOf,
   probeLevelsSchema,
   probeSupportsBridgeMeasurement,
+  wytunnelTransportConfigSchema,
   type BridgeRouteCandidateCheckPayload,
   type ProbeCapabilityInput,
   type VerifyBridgeRouteRequest,
@@ -27,6 +31,7 @@ import {
   type PrepareBridgeRouteRequest,
   type PrepareBridgeRouteResult,
   type ReleaseBridgeRouteResult,
+  type WytunnelRelease,
   type BridgeAgentOfferedImage,
   type BridgeAgentUpdateSummary,
   type BridgeAgentUpdateView,
@@ -35,6 +40,7 @@ import {
   type RequestBridgeAgentUpdate,
   type RequestBridgeAgentUpdateResult,
   type UpdateBridgeRequest,
+  type UpdateBridgeRouteTransportRequest,
 } from "@amnezia/contracts";
 import {
   bridgeAgentReleases,
@@ -45,6 +51,7 @@ import {
   jobOutbox,
   nodes,
   nodeReachabilityResults,
+  peerCurrent,
   reachabilityProbe,
   resetNodeEndpointEvidence,
   users,
@@ -58,6 +65,7 @@ import {
   bridgeConfigUnsupported,
   canRenderBridgeEndpoint,
   classifyKeyForBridge,
+  observedKeyPath,
 } from "./bridgeEndpoint.js";
 import { readBridgeRollbackPreflight } from "./bridgeRollback.js";
 import { BridgeAgentUpdates } from "./bridgeAgentUpdate.js";
@@ -117,6 +125,8 @@ export type BridgeRepositoryOptions = {
     publicIpv4: string,
     configuredHostname?: string | null,
   ) => Promise<BridgePanelDnsStatus | undefined>;
+  /** Optional resolver supplying the current WyTunnel release repo + tag for setup commands. */
+  wytunnelRelease?: () => Promise<WytunnelRelease>;
 };
 
 /** A held route as the test-config preview needs it. */
@@ -142,6 +152,18 @@ const bridgeNotFound = () => new ApiError(404, "Bridge not found", "BRIDGE_NOT_F
 const routeNotFound = () =>
   new ApiError(404, "Bridge route not found", "BRIDGE_ROUTE_NOT_FOUND");
 const nodeNotFound = () => new ApiError(404, "Node not found", "NODE_NOT_FOUND");
+
+const parseValidatedWytunnelConfig = (candidate: unknown) => {
+  const parsed = wytunnelTransportConfigSchema.safeParse(candidate ?? {});
+  if (!parsed.success) {
+    throw new ApiError(
+      400,
+      parsed.error.issues[0]?.message ?? "Invalid WyTunnel transport configuration",
+      "INVALID_WYTUNNEL_CONFIG",
+    );
+  }
+  return parsed.data;
+};
 
 /**
  * The PG error behind a drizzle error, when it is one. drizzle wraps the
@@ -190,6 +212,12 @@ export const mapBridgeConstraintError = (error: unknown): unknown => {
           "This node already holds a route on this bridge",
           "BRIDGE_ROUTE_PAIR_CONFLICT",
         );
+      case "vpn_bridge_routes_node_wytunnel_port_unique":
+        return new ApiError(
+          409,
+          "This node already uses that WyTunnel TCP transport port on another bridge",
+          "BRIDGE_WYTUNNEL_PORT_TAKEN",
+        );
       default:
         return error;
     }
@@ -215,20 +243,36 @@ export const mapBridgeConstraintError = (error: unknown): unknown => {
   return error;
 };
 
+const parseRouteTelemetry = (raw: unknown) => {
+  if (!raw) return null;
+  const parsed = bridgeRouteTelemetrySchema.safeParse(raw);
+  return parsed.success ? parsed.data : null;
+};
+
 const toNodeRoute = (
   route: RouteRow,
   bridge: BridgeRow,
   now: Date,
   staleMs: number,
   awgPath: AwgPathEvidence,
+  nodePublicIp: string | null = null,
+  wytunnelRel?: WytunnelRelease | null,
 ): NodeBridgeRoute => {
   const registration = routeRegistration(route, bridge, now, staleMs);
+  const transportConfig =
+    route.transport === "wytunnel"
+      ? normalizeWytunnelTransportConfig(route.transportConfigJson)
+      : undefined;
   return {
     id: route.id,
     nodeId: route.nodeId,
     bridgeId: route.bridgeId,
     publicUdpPort: route.publicUdpPort,
     state: route.state,
+    transport: route.transport,
+    transportPort: route.transportPort,
+    ...(transportConfig ? { transportConfig } : {}),
+    telemetry: parseRouteTelemetry(route.observedTelemetry),
     frpProxyName: route.frpProxyName,
     observedOnline: route.observedOnline,
     observedRegistrationMarker: route.observedRegistrationMarker,
@@ -256,8 +300,21 @@ const toNodeRoute = (
       publicUdpPort: route.publicUdpPort,
       bridgePublicIpv4: bridge.publicIpv4,
       bridgeControlTcpPort: bridge.controlTcpPort,
+      udpPortStart: bridge.udpPortStart,
+      nodePublicIp,
+      transport: route.transport,
+      transportPort: route.transportPort,
+      transportConfig,
+      bridgeFrpsEnabled: bridge.frpsEnabled,
+      wytunnelRepo: wytunnelRel?.repository,
+      wytunnelVersion: wytunnelRel?.tag,
     }),
   };
+};
+
+type BridgeOnlineCounts = {
+  total: number;
+  byProtocol: Record<string, number>;
 };
 
 const toBridge = (
@@ -269,12 +326,17 @@ const toBridge = (
   agentUpdate: BridgeAgentUpdateSummary | undefined,
   panelDns?: BridgePanelDnsStatus,
   reachability?: AdminReachabilityBridge,
+  online?: BridgeOnlineCounts,
 ): Bridge => ({
   id: row.id,
   name: row.name,
   publicIpv4: row.publicIpv4,
   ...(row.panelDnsHostname ? { panelDnsHostname: row.panelDnsHostname } : {}),
   reachabilityEnabled: row.reachabilityEnabled,
+  defaultTransport: row.defaultTransport,
+  frpsEnabled: row.frpsEnabled,
+  onlinePeerCount: online?.total ?? 0,
+  onlineByProtocol: online?.byProtocol ?? {},
   ...(reachability ? { alertState: bridgeAlertStateOf(reachability) } : {}),
   controlTcpPort: row.controlTcpPort,
   udpPortStart: row.udpPortStart,
@@ -323,7 +385,9 @@ const bridgeAlertStateOf = (view: AdminReachabilityBridge) => {
     failingSince,
     detail: (view.mgmtIncidentOpen ? view.mgmtDetail : null) ??
       (view.probeIncidentOpen ? view.probeDetail : null) ??
-      (failedRoute ? `FRP route offline: ${failedRoute.nodeName}` : null),
+      (failedRoute
+        ? `Bridge route offline: ${failedRoute.nodeName}`
+        : null),
   };
 };
 
@@ -435,6 +499,67 @@ export class PostgresBridgeRepository {
     return result;
   };
 
+  /** Online person-owned peers currently observed on a bridge path, by bridge id. */
+  private onlinePeersByBridge = async (
+    bridgeIds: readonly string[],
+  ): Promise<Map<string, BridgeOnlineCounts>> => {
+    const counts = new Map<string, BridgeOnlineCounts>();
+    if (bridgeIds.length === 0) return counts;
+    const bridgeIdSet = new Set(bridgeIds);
+    const routeRows = await this.db
+      .select({
+        id: vpnBridgeRoutes.id,
+        nodeId: vpnBridgeRoutes.nodeId,
+        bridgeId: vpnBridgeRoutes.bridgeId,
+        state: vpnBridgeRoutes.state,
+      })
+      .from(vpnBridgeRoutes)
+      .where(inArray(vpnBridgeRoutes.bridgeId, [...bridgeIdSet]));
+    const routeNodeIds = [...new Set(routeRows.map((r) => r.nodeId))];
+    if (routeNodeIds.length === 0) return counts;
+    const peerRows = await this.db
+      .select({
+        nodeId: vpnKeys.nodeId,
+        protocol: vpnKeys.protocol,
+        bridgeMode: vpnKeys.bridgeMode,
+        vpnBridgeRouteId: vpnKeys.vpnBridgeRouteId,
+        endpoint: peerCurrent.endpoint,
+      })
+      .from(peerCurrent)
+      .innerJoin(vpnKeys, eq(vpnKeys.id, peerCurrent.keyId))
+      .innerJoin(users, eq(users.id, vpnKeys.ownerId))
+      .where(
+        and(
+          eq(peerCurrent.online, true),
+          eq(vpnKeys.state, "active"),
+          eq(vpnKeys.protocol, "awg3"),
+          inArray(vpnKeys.nodeId, routeNodeIds),
+          eq(users.serviceAccount, false),
+        ),
+      );
+    const activeBridgeByNode = new Map<string, string>();
+    const bridgeByRouteId = new Map<string, string>();
+    for (const r of routeRows) {
+      bridgeByRouteId.set(r.id, r.bridgeId);
+      if (r.state === "active") {
+        activeBridgeByNode.set(r.nodeId, r.bridgeId);
+      }
+    }
+    for (const peer of peerRows) {
+      if (observedKeyPath(peer.endpoint) !== "bridge") continue;
+      const targetBridgeId =
+        peer.bridgeMode === "route" && peer.vpnBridgeRouteId
+          ? bridgeByRouteId.get(peer.vpnBridgeRouteId)
+          : activeBridgeByNode.get(peer.nodeId);
+      if (!targetBridgeId || !bridgeIdSet.has(targetBridgeId)) continue;
+      const entry = counts.get(targetBridgeId) ?? { total: 0, byProtocol: {} };
+      entry.total += 1;
+      entry.byProtocol[peer.protocol] = (entry.byProtocol[peer.protocol] ?? 0) + 1;
+      counts.set(targetBridgeId, entry);
+    }
+    return counts;
+  };
+
   /** Route summaries with their computed registration and verification, by bridge id. */
   private routeSummaries = async (
     bridgeRows: readonly BridgeRow[],
@@ -447,6 +572,8 @@ export class PostgresBridgeRepository {
       .select({
         route: vpnBridgeRoutes,
         nodeName: nodes.name,
+        nodePublicIp: nodes.publicIp,
+        nodePublicHost: nodes.publicHost,
       })
       .from(vpnBridgeRoutes)
       .innerJoin(nodes, eq(nodes.id, vpnBridgeRoutes.nodeId))
@@ -456,7 +583,12 @@ export class PostgresBridgeRepository {
       this.db,
       rows.filter(({ route }) => route.state === "active").map(({ route }) => route.nodeId),
     );
-    for (const { route, nodeName } of rows) {
+    const hasWytunnel = rows.some(({ route }) => route.transport === "wytunnel");
+    const wtRel =
+      hasWytunnel && this.options.wytunnelRelease
+        ? await this.options.wytunnelRelease()
+        : undefined;
+    for (const { route, nodeName, nodePublicIp, nodePublicHost } of rows) {
       const bridge = bridgesById.get(route.bridgeId);
       if (!bridge) continue;
       const registration = routeRegistration(
@@ -465,6 +597,10 @@ export class PostgresBridgeRepository {
         now,
         this.options.observationStaleMs,
       );
+      const transportConfig =
+        route.transport === "wytunnel"
+          ? normalizeWytunnelTransportConfig(route.transportConfigJson)
+          : undefined;
       const list = byBridge.get(route.bridgeId) ?? [];
       list.push({
         id: route.id,
@@ -472,6 +608,10 @@ export class PostgresBridgeRepository {
         nodeName,
         publicUdpPort: route.publicUdpPort,
         state: route.state,
+        transport: route.transport,
+        transportPort: route.transportPort,
+        ...(transportConfig ? { transportConfig } : {}),
+        telemetry: parseRouteTelemetry(route.observedTelemetry),
         registration,
         verification: routeVerification(
           route,
@@ -479,6 +619,21 @@ export class PostgresBridgeRepository {
           now,
           awgPaths.get(route.nodeId) ?? UNKNOWN_AWG_PATH,
         ),
+        setupCommands: routeSetupCommands({
+          id: route.id,
+          bridgeId: bridge.id,
+          publicUdpPort: route.publicUdpPort,
+          bridgePublicIpv4: bridge.publicIpv4,
+          bridgeControlTcpPort: bridge.controlTcpPort,
+          udpPortStart: bridge.udpPortStart,
+          nodePublicIp: nodePublicIp ?? nodePublicHost,
+          transport: route.transport,
+          transportPort: route.transportPort,
+          transportConfig,
+          bridgeFrpsEnabled: bridge.frpsEnabled,
+          wytunnelRepo: wtRel?.repository,
+          wytunnelVersion: wtRel?.tag,
+        }),
       });
       byBridge.set(route.bridgeId, list);
     }
@@ -589,12 +744,13 @@ export class PostgresBridgeRepository {
       .limit(1);
     if (!row) throw bridgeNotFound();
     const now = new Date();
-    const [routes, summaries, agentImage, panelDns, reachability] = await Promise.all([
+    const [routes, summaries, agentImage, panelDns, reachability, onlineCounts] = await Promise.all([
       this.routeSummaries([row], now),
       this.agentUpdates.summaries([row]),
       this.approvedAgentImage(),
       this.checkPanelDns(row.publicIpv4, row.panelDnsHostname),
       this.listReachability(bridgeId),
+      this.onlinePeersByBridge([row.id]),
     ]);
     return toBridge(
       row,
@@ -605,6 +761,7 @@ export class PostgresBridgeRepository {
       summaries.get(row.id),
       panelDns,
       reachability[0],
+      onlineCounts.get(row.id),
     );
   };
 
@@ -614,12 +771,13 @@ export class PostgresBridgeRepository {
       .from(vpnBridges)
       .orderBy(asc(vpnBridges.name), asc(vpnBridges.createdAt));
     const now = new Date();
-    const [routes, agentImage, summaries, dnsStatuses, reachability] = await Promise.all([
+    const [routes, agentImage, summaries, dnsStatuses, reachability, onlineCounts] = await Promise.all([
       this.routeSummaries(rows, now),
       this.approvedAgentImage(),
       this.agentUpdates.summaries(rows),
       Promise.all(rows.map((row) => this.checkPanelDns(row.publicIpv4, row.panelDnsHostname))),
       this.listReachability().then((views) => new Map(views.map((view) => [view.bridgeId, view]))),
+      this.onlinePeersByBridge(rows.map((row) => row.id)),
     ]);
     return rows.map((row, index) =>
       toBridge(
@@ -631,6 +789,7 @@ export class PostgresBridgeRepository {
         summaries.get(row.id),
         dnsStatuses[index],
         reachability.get(row.id),
+        onlineCounts.get(row.id),
       ),
     );
   };
@@ -666,6 +825,15 @@ export class PostgresBridgeRepository {
     let createdId: string;
     try {
       createdId = await this.db.transaction(async (tx) => {
+        const defaultTransport = request.defaultTransport ?? "frp_tcp";
+        const frpsEnabled = request.frpsEnabled ?? true;
+        if (defaultTransport === "frp_tcp" && !frpsEnabled) {
+          throw new ApiError(
+            409,
+            "Cannot set default transport to FRP when frps is disabled",
+            "BRIDGE_FRPS_DISABLED_CONFLICT",
+          );
+        }
         const [created] = await tx
           .insert(vpnBridges)
           .values({
@@ -675,6 +843,8 @@ export class PostgresBridgeRepository {
             udpPortStart: request.udpPortStart,
             udpPortEnd: request.udpPortEnd,
             panelDnsHostname: request.panelDnsHostname ?? null,
+            defaultTransport,
+            frpsEnabled,
             managementStatus: "pending_enrollment",
           })
           .returning();
@@ -691,6 +861,8 @@ export class PostgresBridgeRepository {
             controlTcpPort: created.controlTcpPort,
             udpPortStart: created.udpPortStart,
             udpPortEnd: created.udpPortEnd,
+            defaultTransport: created.defaultTransport,
+            frpsEnabled: created.frpsEnabled,
             ...(created.panelDnsHostname ? { panelDnsHostname: created.panelDnsHostname } : {}),
           },
         });
@@ -747,12 +919,69 @@ export class PostgresBridgeRepository {
           name: vpnBridges.name,
           panelDnsHostname: vpnBridges.panelDnsHostname,
           reachabilityEnabled: vpnBridges.reachabilityEnabled,
+          defaultTransport: vpnBridges.defaultTransport,
+          frpsEnabled: vpnBridges.frpsEnabled,
           enrolledAt: vpnBridges.managementEnrolledAt,
         })
         .from(vpnBridges)
         .where(eq(vpnBridges.id, bridgeId))
         .for("update");
       if (!current) throw bridgeNotFound();
+      if (
+        (request.defaultTransport !== undefined &&
+          request.defaultTransport !== current.defaultTransport) ||
+        (request.frpsEnabled !== undefined && request.frpsEnabled !== current.frpsEnabled)
+      ) {
+        const nextDefaultTransport = request.defaultTransport ?? current.defaultTransport;
+        const nextFrpsEnabled = request.frpsEnabled ?? current.frpsEnabled;
+        if (nextDefaultTransport === "frp_tcp" && !nextFrpsEnabled) {
+          throw new ApiError(
+            409,
+            "Cannot set default transport to FRP when frps is disabled",
+            "BRIDGE_FRPS_DISABLED_CONFLICT",
+          );
+        }
+        if (!nextFrpsEnabled && current.frpsEnabled) {
+          const [frpRoute] = await tx
+            .select({ id: vpnBridgeRoutes.id })
+            .from(vpnBridgeRoutes)
+            .where(
+              and(
+                eq(vpnBridgeRoutes.bridgeId, bridgeId),
+                eq(vpnBridgeRoutes.transport, "frp_tcp"),
+              ),
+            )
+            .limit(1);
+          if (frpRoute) {
+            throw new ApiError(
+              409,
+              "Switch all FRP routes on this bridge to WyTunnel before disabling frps",
+              "BRIDGE_FRPS_ROUTES_EXIST",
+            );
+          }
+        }
+        await tx
+          .update(vpnBridges)
+          .set({
+            defaultTransport: nextDefaultTransport,
+            frpsEnabled: nextFrpsEnabled,
+            updatedAt: new Date(),
+          })
+          .where(eq(vpnBridges.id, bridgeId));
+        await tx.insert(auditEvents).values({
+          actorUserId: actor.id,
+          actorType: "user",
+          action: "vpn_bridge.transport_updated",
+          targetType: "vpn_bridge",
+          targetId: bridgeId,
+          metadata: {
+            fromDefaultTransport: current.defaultTransport,
+            toDefaultTransport: nextDefaultTransport,
+            fromFrpsEnabled: current.frpsEnabled,
+            toFrpsEnabled: nextFrpsEnabled,
+          },
+        });
+      }
       if (request.reachabilityEnabled !== undefined && request.reachabilityEnabled !== current.reachabilityEnabled) {
         await tx.update(vpnBridges)
           .set({ reachabilityEnabled: request.reachabilityEnabled, updatedAt: new Date() })
@@ -870,23 +1099,36 @@ export class PostgresBridgeRepository {
     executor: Database | BridgeTransaction = this.db,
   ): Promise<NodeBridgeRoute[]> => {
     const rows = await executor
-      .select({ route: vpnBridgeRoutes, bridge: vpnBridges })
+      .select({
+        route: vpnBridgeRoutes,
+        bridge: vpnBridges,
+        nodePublicIp: nodes.publicIp,
+        nodePublicHost: nodes.publicHost,
+      })
       .from(vpnBridgeRoutes)
       .innerJoin(vpnBridges, eq(vpnBridges.id, vpnBridgeRoutes.bridgeId))
+      .innerJoin(nodes, eq(nodes.id, vpnBridgeRoutes.nodeId))
       .where(where)
       .orderBy(asc(vpnBridgeRoutes.createdAt));
     const awgPaths = await this.loadAwgPaths(
       executor,
       rows.filter(({ route }) => route.state === "active").map(({ route }) => route.nodeId),
     );
+    const hasWytunnel = rows.some(({ route }) => route.transport === "wytunnel");
+    const wtRel =
+      hasWytunnel && this.options.wytunnelRelease
+        ? await this.options.wytunnelRelease()
+        : undefined;
     const now = new Date();
-    return rows.map(({ route, bridge }) =>
+    return rows.map(({ route, bridge, nodePublicIp, nodePublicHost }) =>
       toNodeRoute(
         route,
         bridge,
         now,
         this.options.observationStaleMs,
         awgPaths.get(route.nodeId) ?? UNKNOWN_AWG_PATH,
+        nodePublicIp ?? nodePublicHost,
+        wtRel,
       ),
     );
   };
@@ -896,9 +1138,15 @@ export class PostgresBridgeRepository {
     routeId: string,
   ): Promise<NodeBridgeRoute> => {
     const [row] = await executor
-      .select({ route: vpnBridgeRoutes, bridge: vpnBridges })
+      .select({
+        route: vpnBridgeRoutes,
+        bridge: vpnBridges,
+        nodePublicIp: nodes.publicIp,
+        nodePublicHost: nodes.publicHost,
+      })
       .from(vpnBridgeRoutes)
       .innerJoin(vpnBridges, eq(vpnBridges.id, vpnBridgeRoutes.bridgeId))
+      .innerJoin(nodes, eq(nodes.id, vpnBridgeRoutes.nodeId))
       .where(eq(vpnBridgeRoutes.id, routeId))
       .limit(1);
     if (!row) throw routeNotFound();
@@ -906,12 +1154,18 @@ export class PostgresBridgeRepository {
       executor,
       row.route.state === "active" ? [row.route.nodeId] : [],
     );
+    const wtRel =
+      row.route.transport === "wytunnel" && this.options.wytunnelRelease
+        ? await this.options.wytunnelRelease()
+        : undefined;
     return toNodeRoute(
       row.route,
       row.bridge,
       new Date(),
       this.options.observationStaleMs,
       awgPaths.get(row.route.nodeId) ?? UNKNOWN_AWG_PATH,
+      row.nodePublicIp ?? row.nodePublicHost,
+      wtRel,
     );
   };
 
@@ -1024,6 +1278,16 @@ export class PostgresBridgeRepository {
               "BRIDGE_ROUTE_PAIR_CONFLICT",
             );
           }
+          if (
+            (request.transport !== undefined && request.transport !== held.transport) ||
+            (request.transportPort !== undefined && request.transportPort !== held.transportPort)
+          ) {
+            throw new ApiError(
+              409,
+              `This node already holds a route (${held.transport}) on this bridge; use route transport update instead`,
+              "BRIDGE_ROUTE_PAIR_CONFLICT",
+            );
+          }
           if (held.state === "retiring") {
             await tx
               .update(vpnBridgeRoutes)
@@ -1099,12 +1363,51 @@ export class PostgresBridgeRepository {
         // Generated here so the proxy name derived from it goes into the same
         // insert.
         const routeId = randomUUID();
+        const transport = request.transport ?? bridge.defaultTransport;
+        if (transport === "frp_tcp" && !bridge.frpsEnabled) {
+          throw new ApiError(
+            409,
+            "FRP is disabled on this bridge; use WyTunnel transport or enable frps",
+            "BRIDGE_FRPS_DISABLED_CONFLICT",
+          );
+        }
+        const transportPort =
+          transport === "wytunnel"
+            ? (request.transportPort ?? deriveWytunnelTransportPort(port, bridge.udpPortStart))
+            : null;
+        if (transport === "wytunnel" && transportPort !== null) {
+          const [portConflict] = await tx
+            .select({ id: vpnBridgeRoutes.id })
+            .from(vpnBridgeRoutes)
+            .where(
+              and(
+                eq(vpnBridgeRoutes.nodeId, nodeId),
+                eq(vpnBridgeRoutes.transport, "wytunnel"),
+                eq(vpnBridgeRoutes.transportPort, transportPort),
+              ),
+            )
+            .limit(1);
+          if (portConflict) {
+            throw new ApiError(
+              409,
+              `Node already uses WyTunnel TCP port ${transportPort} on another bridge; pass a custom --transport-port`,
+              "BRIDGE_WYTUNNEL_PORT_TAKEN",
+            );
+          }
+        }
+        const transportConfigJson =
+          transport === "wytunnel"
+            ? parseValidatedWytunnelConfig(request.transportConfig)
+            : {};
         await tx.insert(vpnBridgeRoutes).values({
           id: routeId,
           nodeId,
           bridgeId: bridge.id,
           publicUdpPort: port,
           state: "draft",
+          transport,
+          transportPort,
+          transportConfigJson,
           frpProxyName: bridgeFrpProxyName(routeId),
         });
         await tx.insert(auditEvents).values({
@@ -1113,7 +1416,14 @@ export class PostgresBridgeRepository {
           action: "vpn_bridge_route.prepared",
           targetType: "vpn_bridge_route",
           targetId: routeId,
-          metadata: { nodeId, bridgeId: bridge.id, publicUdpPort: port },
+          metadata: {
+            nodeId,
+            bridgeId: bridge.id,
+            publicUdpPort: port,
+            transport,
+            transportPort,
+            ...(transport === "wytunnel" ? { transportConfig: transportConfigJson } : {}),
+          },
         });
         return { created: true, routeId };
       });
@@ -1121,6 +1431,136 @@ export class PostgresBridgeRepository {
       throw mapBridgeConstraintError(error);
     }
     return { created: outcome.created, route: await this.loadNodeRoute(this.db, outcome.routeId) };
+  };
+
+  /**
+   * Switch or tune a route's transport (`frp_tcp` <-> `wytunnel`) and WyTunnel
+   * pool/rotation/FEC parameters. Changing transport or transport port clears
+   * stale observation (and candidate verification on draft/retiring routes) so
+   * the bridge-agent reports fresh status from the new transport.
+   */
+  updateRouteTransport = async (
+    actor: Actor,
+    routeId: string,
+    request: UpdateBridgeRouteTransportRequest,
+  ): Promise<NodeBridgeRoute> => {
+    try {
+      await this.db.transaction(async (tx) => {
+        const [located] = await tx
+          .select({ nodeId: vpnBridgeRoutes.nodeId, bridgeId: vpnBridgeRoutes.bridgeId })
+          .from(vpnBridgeRoutes)
+          .where(eq(vpnBridgeRoutes.id, routeId))
+          .limit(1);
+        if (!located) throw routeNotFound();
+        await tx
+          .select({ id: nodes.id })
+          .from(nodes)
+          .where(eq(nodes.id, located.nodeId))
+          .for("no key update");
+        const bridge = (await this.lockBridgesShared(tx, [located.bridgeId])).get(located.bridgeId);
+        if (!bridge) throw bridgeNotFound();
+        const [route] = await tx
+          .select()
+          .from(vpnBridgeRoutes)
+          .where(eq(vpnBridgeRoutes.id, routeId))
+          .for("update");
+        if (!route) throw routeNotFound();
+
+        const nextTransport = request.transport ?? route.transport;
+        if (nextTransport === "frp_tcp" && !bridge.frpsEnabled) {
+          throw new ApiError(
+            409,
+            "FRP is disabled on this bridge; enable frps before switching this route to frp_tcp",
+            "BRIDGE_FRPS_DISABLED_CONFLICT",
+          );
+        }
+        const nextTransportPort =
+          nextTransport === "wytunnel"
+            ? request.transportPort === null
+              ? deriveWytunnelTransportPort(route.publicUdpPort, bridge.udpPortStart)
+              : (request.transportPort ??
+                route.transportPort ??
+                deriveWytunnelTransportPort(route.publicUdpPort, bridge.udpPortStart))
+            : null;
+        if (nextTransport === "wytunnel" && nextTransportPort !== null) {
+          const [portConflict] = await tx
+            .select({ id: vpnBridgeRoutes.id })
+            .from(vpnBridgeRoutes)
+            .where(
+              and(
+                eq(vpnBridgeRoutes.nodeId, route.nodeId),
+                eq(vpnBridgeRoutes.transport, "wytunnel"),
+                eq(vpnBridgeRoutes.transportPort, nextTransportPort),
+                ne(vpnBridgeRoutes.id, routeId),
+              ),
+            )
+            .limit(1);
+          if (portConflict) {
+            throw new ApiError(
+              409,
+              `Node already uses WyTunnel TCP port ${nextTransportPort} on another bridge`,
+              "BRIDGE_WYTUNNEL_PORT_TAKEN",
+            );
+          }
+        }
+        const currentConfig = normalizeWytunnelTransportConfig(route.transportConfigJson);
+        const nextTransportConfig =
+          nextTransport === "wytunnel"
+            ? parseValidatedWytunnelConfig({
+                ...currentConfig,
+                ...(request.transportConfig ?? {}),
+              })
+            : {};
+        const transportChanged =
+          nextTransport !== route.transport || nextTransportPort !== route.transportPort;
+        const now = new Date();
+        await tx
+          .update(vpnBridgeRoutes)
+          .set({
+            transport: nextTransport,
+            transportPort: nextTransportPort,
+            transportConfigJson: nextTransportConfig,
+            ...(transportChanged
+              ? {
+                  observedOnline: null,
+                  observedRegistrationMarker: null,
+                  observedAt: null,
+                  observedTelemetry: null,
+                  ...CLEARED_BRIDGE_ROUTE_ALERT,
+                  ...(route.state !== "active"
+                    ? {
+                        verificationMethod: null,
+                        verifiedRegistrationMarker: null,
+                        verifiedAt: null,
+                        verificationResult: null,
+                        verificationError: null,
+                      }
+                    : {}),
+                }
+              : {}),
+            updatedAt: now,
+          })
+          .where(eq(vpnBridgeRoutes.id, routeId));
+        await tx.insert(auditEvents).values({
+          actorUserId: actor.id,
+          actorType: "user",
+          action: "vpn_bridge_route.transport_updated",
+          targetType: "vpn_bridge_route",
+          targetId: routeId,
+          metadata: {
+            nodeId: route.nodeId,
+            bridgeId: route.bridgeId,
+            fromTransport: route.transport,
+            toTransport: nextTransport,
+            transportPort: nextTransportPort,
+            ...(nextTransport === "wytunnel" ? { transportConfig: nextTransportConfig } : {}),
+          },
+        });
+      });
+    } catch (error) {
+      throw mapBridgeConstraintError(error);
+    }
+    return this.loadNodeRoute(this.db, routeId);
   };
 
   /**
@@ -1631,7 +2071,7 @@ export class PostgresBridgeRepository {
       if (route.observedRegistrationMarker === null) {
         throw new ApiError(
           409,
-          "No frps registration has been observed for this route yet; a probe check needs one to bind to",
+          "No live transport registration has been observed for this route yet; a probe check needs one to bind to",
           "BRIDGE_OBSERVATION_STALE",
         );
       }

@@ -4,7 +4,10 @@ import type { ProbeLevel, ProbeTargetResult } from "@amnezia/contracts";
 
 import {
   alertClock,
+  applyExpectedEgress,
   classifyTarget,
+  formatAddressesDown,
+  formatAddressesUp,
   formatDown,
   formatStale,
   ingestRun,
@@ -808,5 +811,105 @@ describe("ingestRun per address", () => {
     const second = addressTarget("node-a", [address("ep-2", "192.0.2.20", 2)]);
     const out = run([first, second], [down(first), up(second)]);
     expect(out.outcomes).toEqual([expect.objectContaining({ nodeId: "id-node-a", protocol: "awg3", status: "ok" })]);
+  });
+
+  it("verifies expectedEgressIp per address, downgrades mismatches, and formats entry → exit alerts", () => {
+    const matchedAddr: TargetAddress = {
+      ...address("ep-ok", "192.0.2.10", 1),
+      expectedEgressIp: "198.51.100.20",
+    };
+    const mismatchedAddr: TargetAddress = {
+      ...address("ep-mismatch", "192.0.2.11", 2),
+      expectedEgressIp: "198.51.100.30",
+    };
+    const tOk = addressTarget("node-a", [matchedAddr]);
+    const tMismatch = addressTarget("node-b", [mismatchedAddr]);
+
+    const resOk = { ...up(tOk), egressIp: "198.51.100.20" };
+    const resMismatch = { ...up(tMismatch), egressIp: "198.51.100.99" };
+    const sim = simulate(
+      [
+        { targets: [tOk, tMismatch], results: [resOk, resMismatch] },
+        { targets: [tOk, tMismatch], results: [resOk, resMismatch] },
+      ],
+      new Date("2026-01-01T10:00:00Z"),
+    );
+
+    expect(sim.states[0]?.get("id-node-a")?.status).toBe("ok");
+    expect(sim.states[0]?.get("id-node-b")?.status).toBe("failed");
+
+    const single = ingestRun({
+      runId: "run-egress",
+      now: new Date("2026-01-01T10:00:00Z"),
+      label: LABEL,
+      failThreshold: 1,
+      controlOk: true,
+      targets: [tOk, tMismatch],
+      results: [resOk, resMismatch],
+      previous: new Map(),
+      previousAddresses: new Map(),
+    });
+    expect(single.addressOutcomes).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({
+          endpointId: "ep-ok",
+          status: "ok",
+          observedEgressIp: "198.51.100.20",
+          egressMatch: true,
+        }),
+        expect.objectContaining({
+          endpointId: "ep-mismatch",
+          status: "failed",
+          observedEgressIp: "198.51.100.99",
+          egressMatch: false,
+          detail: "egress mismatch: expected 198.51.100.30, got 198.51.100.99",
+        }),
+      ]),
+    );
+    const mismatchOutcome = single.addressOutcomes.find((o) => o.endpointId === "ep-mismatch");
+    expect(mismatchOutcome?.levels?.handshake).toEqual(pass);
+    expect(mismatchOutcome?.levels?.http).toMatchObject({
+      ok: false,
+      detail: "egress mismatch: expected 198.51.100.30, got 198.51.100.99",
+    });
+    expect(single.massFailure).toBe(false);
+    expect(single.notices[0]?.text).toContain("name-ep-mismatch (192.0.2.11 → 198.51.100.30)");
+    expect(single.notices[0]?.text).toContain("egress mismatch: expected 198.51.100.30, got 198.51.100.99");
+
+    const sameText = formatAddressesDown(
+      "node-a",
+      [
+        {
+          name: "direct",
+          address: "198.51.100.10",
+          expectedEgressIp: "198.51.100.10",
+          detail: "no handshake",
+          bridgePath: null,
+          levels: null,
+          since: new Date("2026-01-01T10:00:00Z"),
+        },
+      ],
+      LABEL,
+    );
+    expect(sameText).toContain("direct (198.51.100.10)");
+    expect(sameText).not.toContain("→");
+
+    const upText = formatAddressesUp(
+      "node-b",
+      [
+        {
+          name: "de-entry",
+          address: "192.0.2.11",
+          expectedEgressIp: "198.51.100.30",
+          bridgePath: null,
+        },
+      ],
+      LABEL,
+    );
+    expect(upText).toContain("de-entry (192.0.2.11 → 198.51.100.30)");
+
+    const applied = applyExpectedEgress(classifyTarget(tOk, { ...up(tOk), egressIp: null }, true), "198.51.100.20");
+    expect(applied.outcome.status).toBe("failed");
+    expect(applied.egressMatch).toBe(false);
   });
 });

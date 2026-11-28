@@ -32,6 +32,7 @@ LABEL io.amnezia.bridge-agent.api-version="1"
 COPY --from=prod_deps /app/node_modules ./node_modules
 COPY --from=build /app/dist ./dist
 COPY package.json ./
+COPY bundle /opt/amnezia-bridge-bundle
 
 # Non-root by default. The compose service in infra/bridge/compose.yaml
 # overrides this to 0:0 on purpose: the agent refuses a token or dashboard

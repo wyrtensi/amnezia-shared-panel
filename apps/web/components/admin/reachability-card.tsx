@@ -19,6 +19,7 @@ import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Callout } from "@/components/ui/hint";
 import { Switch } from "@/components/ui/switch";
 import { apiRequest } from "@/lib/api";
+import { formatEntryExit } from "@/lib/egress-api";
 import { formatDateTime } from "@/lib/format";
 import type { Lang } from "@/lib/i18n/messages";
 import { useT } from "@/lib/i18n/provider";
@@ -174,17 +175,29 @@ function EndpointLine({
 }) {
   const active = endpoint.enabled && endpoint.reachabilityEnabled && nodeReachabilityEnabled;
   const dim = !active && "opacity-60";
+  const addressPair = formatEntryExit(endpoint.publicAddress, endpoint.effectiveEgressIp);
+  const preAlertCount = endpoint.probeConsecutiveFailures ?? 0;
   return (
     <li className="space-y-1 rounded-md bg-well px-2.5 py-1.5 text-xs shadow-[var(--inset-shadow)]">
       <div className="flex flex-wrap items-center justify-between gap-2">
         <div className={cn("flex min-w-0 flex-wrap items-center gap-1.5", dim)}>
           <span className="font-medium">{endpoint.name}</span>
-          <code className="font-mono text-muted-foreground">{endpoint.publicAddress}</code>
+          <code className="font-mono text-muted-foreground">
+            {addressPair ?? endpoint.publicAddress}
+          </code>
           {endpoint.enabled ? (
             <StatusBadge status={endpoint.probeStatus} t={t} />
           ) : (
             <Badge variant="outline">{t("reachability.endpointDisabled")}</Badge>
           )}
+          {endpoint.probeEgressMatch === false ? (
+            <Badge variant="destructive">{t("reachability.egressMismatch")}</Badge>
+          ) : null}
+          {!endpoint.incidentOpen && preAlertCount > 0 ? (
+            <Badge variant="warning">
+              {t("reachability.preAlert", { count: preAlertCount })}
+            </Badge>
+          ) : null}
           {endpoint.incidentOpen ? (
             <Badge variant="destructive">
               <TriangleAlert className="h-3 w-3" /> {t("reachability.incident")}
@@ -203,13 +216,23 @@ function EndpointLine({
           />
         ) : null}
       </div>
-      {endpoint.probeCheckedAt || endpoint.probeFailingSince ? (
+      {endpoint.probeCheckedAt || endpoint.probeFailingSince || endpoint.effectiveEgressIp || endpoint.probeObservedEgressIp ? (
         <div className={cn("flex flex-wrap gap-x-3 text-muted-foreground", dim)}>
           {endpoint.probeCheckedAt ? (
             <span>
               {t("reachability.checkedAt", {
                 time: formatDateTime(endpoint.probeCheckedAt, lang),
               })}
+            </span>
+          ) : null}
+          {endpoint.effectiveEgressIp ? (
+            <span className="font-mono">
+              {t("reachability.expectedEgress", { ip: endpoint.effectiveEgressIp })}
+            </span>
+          ) : null}
+          {endpoint.probeObservedEgressIp ? (
+            <span className="font-mono">
+              {t("reachability.observedEgress", { ip: endpoint.probeObservedEgressIp })}
             </span>
           ) : null}
           {endpoint.probeFailingSince ? (

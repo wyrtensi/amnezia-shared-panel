@@ -26,12 +26,22 @@ import {
   upsertReachabilityProbeRequestSchema,
   createBridgeRequestSchema,
   updateBridgeRequestSchema,
+  updateBridgeRouteTransportRequestSchema,
   prepareBridgeRouteRequestSchema,
   BRIDGE_REGISTRATION_MARKER_HEADER,
   bridgeTestConfigQuerySchema,
   encodeRegistrationMarkerHeader,
+  parseWytunnelReleaseRepo,
+  parseWytunnelReleaseVersion,
   requestBridgeAgentUpdateSchema,
   verifyBridgeRouteRequestSchema,
+  adminReassignKeyEndpointRequestSchema,
+  createNodeEgressIpRequestSchema,
+  notifyKeyUpdateRequestSchema,
+  swapNodeEgressIpRequestSchema,
+  updateNodeEgressIpRequestSchema,
+  updateNodeEgressModeRequestSchema,
+  verifyNodeEgressIpRequestSchema,
 } from "@amnezia/contracts";
 import { contentDispositionAttachment } from "./configFilename.js";
 import {
@@ -49,6 +59,10 @@ import {
   createClientReleaseResolver,
   type ClientReleaseResolver,
 } from "./clientReleases.js";
+import {
+  createWytunnelReleaseResolver,
+  type WytunnelReleaseResolver,
+} from "./wytunnelReleases.js";
 
 type Environment = "development" | "test" | "production";
 
@@ -92,6 +106,11 @@ export type BuildAppOptions = {
    * answer and falls back to version-free links when GitHub is unreachable.
    */
   clientReleaseResolver?: ClientReleaseResolver;
+  /**
+   * Resolves the newest WyTunnel binary release for admin bridge/node setup
+   * commands and update badges. Injectable for tests.
+   */
+  wytunnelReleaseResolver?: WytunnelReleaseResolver;
 };
 
 const idParamsSchema = z.object({ id: z.uuid() });
@@ -157,6 +176,7 @@ export const buildApp = async ({
   allowDevIdentity,
   updateController,
   clientReleaseResolver,
+  wytunnelReleaseResolver,
 }: BuildAppOptions) => {
   // `loggerInstance` and `logger` are mutually exclusive in Fastify 5, so an
   // injected logger replaces the flag rather than sitting beside it.
@@ -175,6 +195,13 @@ export const buildApp = async ({
       version: versionInfo(),
     });
   const clientReleases = clientReleaseResolver ?? createClientReleaseResolver();
+  const wytunnelReleases =
+    wytunnelReleaseResolver ??
+    createWytunnelReleaseResolver({
+      repository: parseWytunnelReleaseRepo(process.env.WYTUNNEL_RELEASE_REPO),
+      pinnedVersion: parseWytunnelReleaseVersion(process.env.WYTUNNEL_RELEASE_VERSION),
+      githubToken: process.env.GITHUB_TOKEN,
+    });
 
   await app.register(helmet, { contentSecurityPolicy: false });
 
@@ -451,6 +478,14 @@ export const buildApp = async ({
     adminFor(request);
     return clientReleases.refresh();
   });
+  app.get("/api/admin/wytunnel/release", async (request) => {
+    adminFor(request);
+    return wytunnelReleases.get();
+  });
+  app.post("/api/admin/wytunnel/release/refresh", async (request) => {
+    adminFor(request);
+    return wytunnelReleases.refresh();
+  });
   app.get("/api/admin/overview", async (request) =>
     service.getAdminOverview(adminFor(request)),
   );
@@ -546,6 +581,110 @@ export const buildApp = async ({
       adminFor(request),
       id,
       updateNodeIpv6RejectStubRequestSchema.parse(request.body),
+    );
+  });
+  const egressIpParamsSchema = z.object({ id: z.uuid(), ipId: z.uuid() });
+  app.get("/api/admin/nodes/:id/egress-ips", async (request) => {
+    const { id } = idParamsSchema.parse(request.params);
+    return service.listNodeEgressIps(adminFor(request), id);
+  });
+  app.post("/api/admin/nodes/:id/egress-ips", async (request, reply) => {
+    const { id } = idParamsSchema.parse(request.params);
+    const created = await service.createNodeEgressIp(
+      adminFor(request),
+      id,
+      createNodeEgressIpRequestSchema.parse(request.body),
+    );
+    return reply.code(201).send(created);
+  });
+  app.patch("/api/admin/nodes/:id/egress-ips/:ipId", async (request) => {
+    const { id, ipId } = egressIpParamsSchema.parse(request.params);
+    return service.updateNodeEgressIp(
+      adminFor(request),
+      id,
+      ipId,
+      updateNodeEgressIpRequestSchema.parse(request.body),
+    );
+  });
+  app.delete("/api/admin/nodes/:id/egress-ips/:ipId", async (request) => {
+    const { id, ipId } = egressIpParamsSchema.parse(request.params);
+    return service.deleteNodeEgressIp(adminFor(request), id, ipId);
+  });
+  app.post("/api/admin/nodes/:id/egress-ips/:ipId/swap", async (request) => {
+    const { id, ipId } = egressIpParamsSchema.parse(request.params);
+    return service.swapNodeEgressIp(
+      adminFor(request),
+      id,
+      ipId,
+      swapNodeEgressIpRequestSchema.parse(request.body),
+    );
+  });
+  app.post("/api/admin/nodes/:id/egress-ips/:ipId/verify", async (request) => {
+    const { id, ipId } = egressIpParamsSchema.parse(request.params);
+    return service.verifyNodeEgressIp(
+      adminFor(request),
+      id,
+      ipId,
+      verifyNodeEgressIpRequestSchema.parse(request.body ?? {}),
+    );
+  });
+  app.put("/api/admin/nodes/:id/egress-mode", async (request) => {
+    const { id } = idParamsSchema.parse(request.params);
+    return service.setNodeEgressMode(
+      adminFor(request),
+      id,
+      updateNodeEgressModeRequestSchema.parse(request.body),
+    );
+  });
+  app.post("/api/admin/nodes/:id/egress-mode/adopt", async (request) => {
+    const { id } = idParamsSchema.parse(request.params);
+    return service.adoptNodeEgressMode(adminFor(request), id);
+  });
+  const endpointParamsSchema = z.object({ id: z.uuid(), endpointId: z.uuid() });
+  app.post("/api/admin/nodes/:id/notify-key-update", async (request) => {
+    const { id } = idParamsSchema.parse(request.params);
+    return service.notifyNodeKeyUpdate(
+      adminFor(request),
+      id,
+      notifyKeyUpdateRequestSchema.parse(request.body ?? {}),
+    );
+  });
+  app.delete("/api/admin/nodes/:id/notify-key-update", async (request) => {
+    const { id } = idParamsSchema.parse(request.params);
+    return service.clearNodeKeyUpdate(adminFor(request), id);
+  });
+  app.post("/api/admin/nodes/:id/egress-ips/:ipId/notify-key-update", async (request) => {
+    const { id, ipId } = egressIpParamsSchema.parse(request.params);
+    return service.notifyNodeEgressIpKeyUpdate(
+      adminFor(request),
+      id,
+      ipId,
+      notifyKeyUpdateRequestSchema.parse(request.body ?? {}),
+    );
+  });
+  app.delete("/api/admin/nodes/:id/egress-ips/:ipId/notify-key-update", async (request) => {
+    const { id, ipId } = egressIpParamsSchema.parse(request.params);
+    return service.clearNodeEgressIpKeyUpdate(adminFor(request), id, ipId);
+  });
+  app.post("/api/admin/nodes/:id/public-endpoints/:endpointId/notify-key-update", async (request) => {
+    const { id, endpointId } = endpointParamsSchema.parse(request.params);
+    return service.notifyNodeEndpointKeyUpdate(
+      adminFor(request),
+      id,
+      endpointId,
+      notifyKeyUpdateRequestSchema.parse(request.body ?? {}),
+    );
+  });
+  app.delete("/api/admin/nodes/:id/public-endpoints/:endpointId/notify-key-update", async (request) => {
+    const { id, endpointId } = endpointParamsSchema.parse(request.params);
+    return service.clearNodeEndpointKeyUpdate(adminFor(request), id, endpointId);
+  });
+  app.patch("/api/admin/keys/:id/endpoint", async (request) => {
+    const { id } = idParamsSchema.parse(request.params);
+    return service.reassignKeyEndpoint(
+      adminFor(request),
+      id,
+      adminReassignKeyEndpointRequestSchema.parse(request.body),
     );
   });
   app.delete("/api/admin/nodes/:id", async (request) => {
@@ -664,6 +803,15 @@ export const buildApp = async ({
       );
     }
     return service.releaseBridgeRoute(admin, id);
+  });
+  app.patch("/api/admin/vpn-bridge-routes/:id/transport", async (request) => {
+    const admin = adminFor(request);
+    const { id } = idParamsSchema.parse(request.params);
+    return service.updateBridgeRouteTransport(
+      admin,
+      id,
+      updateBridgeRouteTransportRequestSchema.parse(request.body),
+    );
   });
   // Candidate validation. Static last segments, so neither reaches the
   // generic `:resource/:id/:action` handler below.

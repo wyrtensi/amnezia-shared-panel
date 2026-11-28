@@ -10,6 +10,7 @@ import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Switch } from "@/components/ui/switch";
+import { formatEntryExit } from "@/lib/egress-api";
 import { useT } from "@/lib/i18n/provider";
 import { cn } from "@/lib/utils";
 
@@ -154,7 +155,7 @@ export function NodePublicEndpoints({
               </div>
               <div className="flex flex-wrap items-center justify-between gap-1.5">
                 <code className="font-mono text-xs text-muted-foreground">
-                  {endpoint.publicAddress}
+                  {formatEntryExit(endpoint.publicAddress, endpoint.effectiveEgressIp) ?? endpoint.publicAddress}
                 </code>
                 <div className="flex flex-wrap items-center gap-1">
                   <Badge
@@ -163,6 +164,11 @@ export function NodePublicEndpoints({
                   >
                     {t(statusBadge.key)}
                   </Badge>
+                  {endpoint.probeEgressMatch === false ? (
+                    <Badge variant="destructive">
+                      {t("reachability.egressMismatch")}
+                    </Badge>
+                  ) : null}
                   {endpoint.incidentOpen ? (
                     <Badge variant="destructive">
                       <TriangleAlert className="h-3 w-3" /> {t("reachability.incident")}

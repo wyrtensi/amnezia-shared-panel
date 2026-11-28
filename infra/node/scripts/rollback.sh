@@ -13,13 +13,14 @@ case "$archive" in
 esac
 
 validate_backup_archive "$archive"
-sh "$SCRIPT_DIR/preflight.sh"
+# Rollback pulls zero images; allow tight-disk recovery down to 256 MiB while keeping RAM/key/JSON checks.
+PREFLIGHT_DISK_MIN_KB=262144 sh "$SCRIPT_DIR/preflight.sh"
 acquire_lock
 ensure_layout
 
 temporary="$(mktemp -d "$NODE_DIR/.rollback.XXXXXX")"
 # This function is invoked through the EXIT/INT/TERM trap.
-# shellcheck disable=SC2317
+# shellcheck disable=SC2317,SC2329
 cleanup() {
   rm -rf "$temporary"
   rmdir "$LOCK_DIR" 2>/dev/null || true
@@ -29,10 +30,17 @@ trap cleanup EXIT INT TERM
 tar -xzf "$archive" -C "$temporary" --no-same-owner --no-same-permissions
 restored_state="$temporary/state/amnezia-awg2"
 restored_state_awg3="$temporary/state/amnezia-awg3"
+restored_egress_state="$temporary/egress/state.json"
+restored_egress_meta="$temporary/egress/meta.env"
 
-# AWG3 state is only present in backups taken after the AWG3 rollout
+has_awg2=0
 has_awg3=0
-[ -d "$restored_state_awg3" ] && has_awg3=1
+[ -d "$restored_state" ] && [ -s "$restored_state/awg0.conf" ] && has_awg2=1
+[ -d "$restored_state_awg3" ] && [ -s "$restored_state_awg3/awg0.conf" ] && has_awg3=1
+
+if [ "$has_awg2" -eq 0 ] && [ "$has_awg3" -eq 0 ]; then
+  fail "backup contains neither AWG2 nor AWG3 state"
+fi
 
 for required_file in \
   awg0.conf \
@@ -40,18 +48,22 @@ for required_file in \
   wireguard_server_private_key.key \
   wireguard_server_public_key.key \
   wireguard_psk.key; do
-  [ -s "$restored_state/$required_file" ] || fail "backup is missing required state: $required_file"
-  [ ! -L "$restored_state/$required_file" ] || fail "backup state contains a symlink"
+  if [ "$has_awg2" -eq 1 ]; then
+    [ -s "$restored_state/$required_file" ] || fail "backup is missing required AWG2 state: $required_file"
+    [ ! -L "$restored_state/$required_file" ] || fail "backup AWG2 state contains a symlink"
+  fi
   if [ "$has_awg3" -eq 1 ]; then
     [ -s "$restored_state_awg3/$required_file" ] || fail "backup is missing required AWG3 state: $required_file"
     [ ! -L "$restored_state_awg3/$required_file" ] || fail "backup AWG3 state contains a symlink"
   fi
 done
 
-grep -Eq '^Address[[:space:]]*=[[:space:]]*10\.89\.0\.1/22[[:space:]]*$' "$restored_state/awg0.conf" || \
-  fail "backup does not use 10.89.0.0/22"
-grep -Eq '^ListenPort[[:space:]]*=[[:space:]]*51889[[:space:]]*$' "$restored_state/awg0.conf" || \
-  fail "backup does not use UDP 51889"
+if [ "$has_awg2" -eq 1 ]; then
+  grep -Eq '^Address[[:space:]]*=[[:space:]]*10\.89\.0\.1/22[[:space:]]*$' "$restored_state/awg0.conf" || \
+    fail "backup does not use 10.89.0.0/22"
+  grep -Eq '^ListenPort[[:space:]]*=[[:space:]]*51889[[:space:]]*$' "$restored_state/awg0.conf" || \
+    fail "backup does not use UDP 51889"
+fi
 
 if [ "$has_awg3" -eq 1 ]; then
   grep -Eq '^Address[[:space:]]*=[[:space:]]*10\.90\.0\.1/22[[:space:]]*$' "$restored_state_awg3/awg0.conf" || \
@@ -81,7 +93,7 @@ verify_state_keys() {
     '
 }
 
-verify_state_keys "$AWG2_IMAGE" "$restored_state"
+[ "$has_awg2" -eq 0 ] || verify_state_keys "$AWG2_IMAGE" "$restored_state"
 [ "$has_awg3" -eq 0 ] || verify_state_keys "$AWG3_IMAGE" "$restored_state_awg3"
 
 node_image="$(env_value NODE_AGENT_IMAGE)"
@@ -93,19 +105,73 @@ validate_clients_table() {
     "$node_image" \
     -e "JSON.parse(require('fs').readFileSync('/state/clientsTable','utf8'))"
 }
-validate_clients_table "$restored_state"
+[ "$has_awg2" -eq 0 ] || validate_clients_table "$restored_state"
 [ "$has_awg3" -eq 0 ] || validate_clients_table "$restored_state_awg3"
 
+restored_mode=""
+if [ -e "$restored_egress_meta" ]; then
+  [ -f "$restored_egress_meta" ] && [ ! -L "$restored_egress_meta" ] || \
+    fail "backup egress/meta.env must be a regular file"
+  restored_mode="$(sed -n 's/^AWG3_EGRESS_MODE=//p' "$restored_egress_meta" | head -n 1)"
+  case "$restored_mode" in
+    masquerade|routed) ;;
+    *) fail "backup egress/meta.env has invalid AWG3_EGRESS_MODE" ;;
+  esac
+fi
+
+if [ -e "$restored_egress_state" ]; then
+  [ -f "$restored_egress_state" ] && [ ! -L "$restored_egress_state" ] || \
+    fail "backup egress/state.json must be a regular file"
+  egress_size="$(wc -c <"$restored_egress_state" | tr -d ' ')"
+  [ "$egress_size" -le 2097152 ] || fail "backup egress/state.json exceeds 2 MiB"
+  docker run --rm --platform linux/amd64 \
+    --user 0:0 \
+    --volume "$temporary/egress:/egress:ro" \
+    --entrypoint node \
+    "$node_image" \
+    -e "JSON.parse(require('fs').readFileSync('/egress/state.json','utf8'))"
+fi
+
 safety_backup=''
-if [ -s "$STATE_DIR/awg0.conf" ]; then
+if [ -s "$STATE_DIR/awg0.conf" ] || [ -s "$STATE_DIR_AWG3/awg0.conf" ]; then
   safety_backup="$(create_backup 0)" || fail "could not create pre-rollback safety backup"
   info "Pre-rollback safety backup created: $safety_backup"
 else
   compose stop --timeout 30 node-agent awg2 awg3 >/dev/null 2>&1 || true
 fi
 
-find "$restored_state" -type d -exec chmod 700 {} +
-find "$restored_state" -type f -exec chmod 600 {} +
+EGRESS_SOCKET="${NODE_EGRESS_SOCKET:-/run/amnezia-egress/egressd.sock}"
+EGRESS_MODE_FILE="$STATE_DIR_AWG3/egress-mode"
+
+write_egress_mode_file() {
+  mode_val="$1"
+  mkdir -p "$STATE_DIR_AWG3"
+  chmod 700 "$STATE_DIR_AWG3"
+  mode_tmp="$(mktemp "$STATE_DIR_AWG3/.egress-mode.XXXXXX")" || return 1
+  printf '%s\n' "$mode_val" >"$mode_tmp" || { rm -f "$mode_tmp"; return 1; }
+  chmod 600 "$mode_tmp"
+  mv -f "$mode_tmp" "$EGRESS_MODE_FILE"
+}
+
+previous_env="$temporary/previous.env"
+cp -p "$ENV_FILE" "$previous_env"
+previous_egress_state="$temporary/previous-egress-state.json"
+had_previous_egress_state=0
+if [ -f "$EGRESS_STATE_FILE" ] && [ ! -L "$EGRESS_STATE_FILE" ]; then
+  had_previous_egress_state=1
+  cp -p "$EGRESS_STATE_FILE" "$previous_egress_state"
+fi
+previous_egress_mode="$temporary/previous-egress-mode"
+had_previous_egress_mode=0
+if [ -f "$EGRESS_MODE_FILE" ] && [ ! -L "$EGRESS_MODE_FILE" ]; then
+  had_previous_egress_mode=1
+  cp -p "$EGRESS_MODE_FILE" "$previous_egress_mode"
+fi
+
+if [ "$has_awg2" -eq 1 ]; then
+  find "$restored_state" -type d -exec chmod 700 {} +
+  find "$restored_state" -type f -exec chmod 600 {} +
+fi
 if [ "$has_awg3" -eq 1 ]; then
   find "$restored_state_awg3" -type d -exec chmod 700 {} +
   find "$restored_state_awg3" -type f -exec chmod 600 {} +
@@ -113,21 +179,79 @@ fi
 
 previous_state="$temporary/previous-amnezia-awg2"
 previous_state_awg3="$temporary/previous-amnezia-awg3"
-if [ -d "$STATE_DIR" ]; then
-  mv "$STATE_DIR" "$previous_state"
+if [ "$has_awg2" -eq 1 ]; then
+  [ -d "$STATE_DIR" ] && mv "$STATE_DIR" "$previous_state"
+  mv "$restored_state" "$STATE_DIR"
 fi
-mv "$restored_state" "$STATE_DIR"
 if [ "$has_awg3" -eq 1 ]; then
-  if [ -d "$STATE_DIR_AWG3" ]; then
-    mv "$STATE_DIR_AWG3" "$previous_state_awg3"
-  fi
+  [ -d "$STATE_DIR_AWG3" ] && mv "$STATE_DIR_AWG3" "$previous_state_awg3"
   mv "$restored_state_awg3" "$STATE_DIR_AWG3"
 fi
 
+if [ -n "$restored_mode" ]; then
+  set_env_value AWG3_EGRESS_MODE "$restored_mode"
+  write_egress_mode_file "$restored_mode"
+elif [ ! -e "$restored_egress_state" ] && [ "$has_awg3" -eq 1 ]; then
+  # Legacy pre-egress backup: reset to masquerade and drop stale host egress state.
+  set_env_value AWG3_EGRESS_MODE "masquerade"
+  rm -f "$EGRESS_MODE_FILE" "$EGRESS_STATE_FILE"
+elif [ -f "$EGRESS_MODE_FILE" ] && [ ! -L "$EGRESS_MODE_FILE" ]; then
+  file_mode="$(tr -d '[:space:]' <"$EGRESS_MODE_FILE" 2>/dev/null || true)"
+  case "$file_mode" in
+    masquerade|routed) set_env_value AWG3_EGRESS_MODE "$file_mode" ;;
+  esac
+fi
+if [ -f "$restored_egress_state" ]; then
+  egress_dir="$(dirname -- "$EGRESS_STATE_FILE")"
+  mkdir -p "$egress_dir"
+  chmod 700 "$egress_dir"
+  cp "$restored_egress_state" "$EGRESS_STATE_FILE"
+  chmod 600 "$EGRESS_STATE_FILE"
+fi
+
+sync_host_egress_after_restore() {
+  mode="${1:-masquerade}"
+  if ! command -v amnezia-egressd >/dev/null 2>&1; then
+    [ "$mode" != "routed" ] || return 1
+    return 0
+  fi
+  if [ "$mode" = "routed" ]; then
+    amnezia-egressd reconcile --socket "$EGRESS_SOCKET" --node-dir "$NODE_DIR" --state "$EGRESS_STATE_FILE" || return 1
+    if command -v systemctl >/dev/null 2>&1 && systemctl is-enabled amnezia-egressd.service >/dev/null 2>&1; then
+      systemctl restart amnezia-egressd.service || return 1
+    fi
+  else
+    amnezia-egressd teardown --socket "$EGRESS_SOCKET" --node-dir "$NODE_DIR" --state "$EGRESS_STATE_FILE" || return 1
+  fi
+  if command -v conntrack >/dev/null 2>&1; then
+    conntrack -D -s 10.90.0.0/22 >/dev/null 2>&1 || true
+  fi
+}
+
+effective_mode=""
+if [ -r "$EGRESS_MODE_FILE" ] && [ ! -L "$EGRESS_MODE_FILE" ]; then
+  effective_mode="$(tr -d '[:space:]' <"$EGRESS_MODE_FILE" 2>/dev/null || true)"
+fi
+case "$effective_mode" in
+  masquerade|routed) ;;
+  *) effective_mode="$(env_value AWG3_EGRESS_MODE)" ;;
+esac
+case "$effective_mode" in
+  masquerade|routed) ;;
+  *) effective_mode="masquerade" ;;
+esac
+
 rollback_healthy=0
-if compose up --detach --no-build && \
-   wait_healthy amnezia-awg2 && \
+pre_reconcile_ok=1
+if [ "$effective_mode" = "routed" ] && command -v amnezia-egressd >/dev/null 2>&1; then
+  # Pre-load host nftables before awg3 comes up fail-closed in routed mode.
+  amnezia-egressd reconcile --socket "$EGRESS_SOCKET" --node-dir "$NODE_DIR" --state "$EGRESS_STATE_FILE" || pre_reconcile_ok=0
+fi
+if [ "$pre_reconcile_ok" -eq 1 ] && \
+   compose up --detach --no-build && \
+   { ! awg2_enabled || [ "$has_awg2" -eq 0 ] || wait_healthy amnezia-awg2; } && \
    { [ "$has_awg3" -eq 0 ] || wait_healthy amnezia-awg3; } && \
+   sync_host_egress_after_restore "$effective_mode" && \
    wait_healthy amnezia-node-agent; then
   agent_binding="$(docker port amnezia-node-agent 4001/tcp)"
   [ "$agent_binding" = "127.0.0.1:4001" ] && rollback_healthy=1
@@ -139,19 +263,56 @@ if [ "$rollback_healthy" -eq 1 ]; then
 fi
 
 compose stop --timeout 30 node-agent awg2 awg3 >/dev/null 2>&1 || true
-failed_state="$temporary/failed-restored-state"
-mv "$STATE_DIR" "$failed_state"
-if [ -d "$previous_state" ]; then
-  mv "$previous_state" "$STATE_DIR"
+if [ "$has_awg2" -eq 1 ]; then
+  failed_state="$temporary/failed-restored-state"
+  [ -d "$STATE_DIR" ] && mv "$STATE_DIR" "$failed_state"
+  [ -d "$previous_state" ] && mv "$previous_state" "$STATE_DIR"
 fi
 if [ "$has_awg3" -eq 1 ]; then
   failed_state_awg3="$temporary/failed-restored-state-awg3"
   [ -d "$STATE_DIR_AWG3" ] && mv "$STATE_DIR_AWG3" "$failed_state_awg3"
-  if [ -d "$previous_state_awg3" ]; then
-    mv "$previous_state_awg3" "$STATE_DIR_AWG3"
-  fi
+  [ -d "$previous_state_awg3" ] && mv "$previous_state_awg3" "$STATE_DIR_AWG3"
 fi
-if [ -d "$STATE_DIR" ]; then
+cp -pf "$previous_env" "$ENV_FILE"
+chmod 600 "$ENV_FILE"
+if [ "$had_previous_egress_state" -eq 1 ]; then
+  egress_dir="$(dirname -- "$EGRESS_STATE_FILE")"
+  mkdir -p "$egress_dir"
+  chmod 700 "$egress_dir"
+  cp -pf "$previous_egress_state" "$EGRESS_STATE_FILE"
+  chmod 600 "$EGRESS_STATE_FILE"
+else
+  rm -f "$EGRESS_STATE_FILE"
+fi
+if [ "$had_previous_egress_mode" -eq 1 ]; then
+  prev_mode_val="$(tr -d '[:space:]' <"$previous_egress_mode" 2>/dev/null || true)"
+  case "$prev_mode_val" in
+    masquerade|routed) write_egress_mode_file "$prev_mode_val" || true ;;
+    *)
+      mkdir -p "$STATE_DIR_AWG3"
+      chmod 700 "$STATE_DIR_AWG3"
+      cp -pf "$previous_egress_mode" "$EGRESS_MODE_FILE"
+      chmod 600 "$EGRESS_MODE_FILE"
+      ;;
+  esac
+else
+  rm -f "$EGRESS_MODE_FILE"
+fi
+prev_mode=""
+if [ -r "$EGRESS_MODE_FILE" ] && [ ! -L "$EGRESS_MODE_FILE" ]; then
+  prev_mode="$(tr -d '[:space:]' <"$EGRESS_MODE_FILE" 2>/dev/null || true)"
+fi
+case "$prev_mode" in
+  masquerade|routed) ;;
+  *) prev_mode="$(env_value AWG3_EGRESS_MODE)" ;;
+esac
+case "$prev_mode" in
+  masquerade|routed) ;;
+  *) prev_mode="masquerade" ;;
+esac
+
+if [ -d "$STATE_DIR" ] || [ -d "$STATE_DIR_AWG3" ]; then
   compose up --detach --no-build >/dev/null 2>&1 || true
 fi
+sync_host_egress_after_restore "$prev_mode" >/dev/null 2>&1 || true
 fail "rollback health gate failed; the pre-rollback state was restored"

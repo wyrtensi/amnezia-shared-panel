@@ -328,4 +328,40 @@ describe("ReachabilityBody", () => {
     expect(html).toContain(en("reachability.nodeDisabled"));
     expect(html).toContain("opacity-60");
   });
+
+  it("renders Entry -> Exit, expected/observed egress, mismatch badge, and pre-alert badge", () => {
+    const html = render({
+      probe: PROBE,
+      nodes: [
+        node({
+          publicEndpoints: [
+            {
+              id: "00000000-0000-4000-8000-000000000011",
+              ordinal: 1,
+              name: "Amsterdam v1",
+              publicAddress: "192.0.2.10",
+              effectiveEgressIp: "198.51.100.20",
+              probeObservedEgressIp: "198.51.100.99",
+              probeEgressMatch: false,
+              enabled: true,
+              reachabilityEnabled: true,
+              probeStatus: "failed",
+              probeLevels: null,
+              probeCheckedAt: "2026-11-10T08:00:00.000Z",
+              probeFailingSince: null,
+              probeConsecutiveFailures: 1,
+              incidentOpen: false,
+              probeDetail: "egress mismatch",
+              reachability: { state: "unknown", since: null },
+            },
+          ],
+        }),
+      ],
+    });
+    expect(html).toContain("192.0.2.10 → 198.51.100.20");
+    expect(html).toContain(en("reachability.egressMismatch"));
+    expect(html).toContain("expected 198.51.100.20");
+    expect(html).toContain("observed 198.51.100.99");
+    expect(html).toContain("warning: 1");
+  });
 });

@@ -4,6 +4,12 @@ import {
   runProbe,
   UnsupportedProbeError,
 } from "./probes";
+import type { EgressService } from "@/services/egress";
+
+export interface CheckExecutionOptions {
+  egressService?: EgressService;
+  egressIpv4?: string;
+}
 
 export interface CheckRequest {
   id: string;
@@ -47,11 +53,20 @@ const cleanDetail = (value: string): string =>
  *              user a service is blocked when the node could not look is worse
  *              than telling them nothing.
  */
-export const runCheck = async (check: CheckRequest): Promise<CheckResult> => {
+export const runCheck = async (
+  check: CheckRequest,
+  options?: CheckExecutionOptions,
+): Promise<CheckResult> => {
   const startedAt = Date.now();
   const base = { id: check.id, httpStatus: null, finalUrl: null } as const;
   try {
-    const outcome = await runProbe(check.probe, check.timeoutMs ?? 10_000);
+    const probe =
+      typeof check.probe.egressIpv4 === "string" || !options?.egressIpv4
+        ? check.probe
+        : { ...check.probe, egressIpv4: options.egressIpv4 };
+    const outcome = await runProbe(probe, check.timeoutMs ?? 10_000, {
+      egressService: options?.egressService,
+    });
     const failure = evaluateAssertions(outcome, check.assertions);
     return {
       id: check.id,
@@ -100,6 +115,7 @@ export const runCheck = async (check: CheckRequest): Promise<CheckResult> => {
 export const runChecks = async (
   checks: readonly CheckRequest[],
   concurrency: number = DEFAULT_CONCURRENCY,
+  options?: CheckExecutionOptions,
 ): Promise<CheckResult[]> => {
   const results = new Array<CheckResult>(checks.length);
   let next = 0;
@@ -109,7 +125,7 @@ export const runChecks = async (
       while (next < checks.length) {
         const index = next;
         next += 1;
-        results[index] = await runCheck(checks[index] as CheckRequest);
+        results[index] = await runCheck(checks[index] as CheckRequest, options);
       }
     },
   );

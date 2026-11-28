@@ -7,14 +7,19 @@ import {
   Download,
   RefreshCw,
   Server,
+  SlidersHorizontal,
   TriangleAlert,
 } from "lucide-react";
 import { toast } from "sonner";
-import { endpointBridgeModeSchema } from "@amnezia/contracts";
+import {
+  BRIDGE_WYTUNNEL_DEFAULT_POOL_SIZE,
+  endpointBridgeModeSchema,
+} from "@amnezia/contracts";
 import type {
   Bridge,
   BridgeEligibility,
   BridgeRouteSummary,
+  BridgeRouteTransport,
   InfrastructureBridgeItem,
   InfrastructureVpnItem,
   NodeBridgeRoute,
@@ -43,6 +48,11 @@ import {
   DialogTitle,
 } from "@/components/ui/dialog";
 import { BridgeRouteFacts } from "@/components/admin/bridge-route-view";
+import {
+  BridgeRouteTransportStrip,
+  BridgeTransportDialog,
+  type EditableRouteTransportTarget,
+} from "@/components/admin/bridge-transport-dialog";
 import { CommandBlock } from "@/components/admin/command-block";
 import { useAdminData } from "@/components/admin/admin-data";
 import {
@@ -67,6 +77,7 @@ import {
   verificationTone,
 } from "@/lib/bridge-ui";
 import { ApiClientError } from "@/lib/api";
+import { formatEntryExit } from "@/lib/egress-api";
 import { cn } from "@/lib/utils";
 import { useT } from "@/lib/i18n/provider";
 import type { KeyView } from "@/lib/types";
@@ -135,6 +146,8 @@ export function NodeRoutesEditor({ initialNodeId }: { initialNodeId: string | nu
   const [detailLoading, setDetailLoading] = React.useState(false);
   const [busy, setBusy] = React.useState<string | null>(null);
   const [notice, setNotice] = React.useState<Notice | null>(null);
+  const [editingTransport, setEditingTransport] =
+    React.useState<EditableRouteTransportTarget | null>(null);
 
   const selectExpandedNode = React.useCallback((nextId: string | null) => {
     expandedNodeIdRef.current = nextId;
@@ -552,7 +565,9 @@ export function NodeRoutesEditor({ initialNodeId }: { initialNodeId: string | nu
                           <li key={endpoint.id} className="flex flex-wrap items-center justify-between gap-2 rounded-md bg-well/50 px-2 py-1.5">
                             <div className="min-w-0 flex-1">
                               <span className="break-words text-sm">{endpoint.name}</span>
-                              <code className="ml-1.5 break-all text-xs text-muted-foreground">{endpoint.publicAddress}</code>
+                              <code className="ml-1.5 break-all text-xs text-muted-foreground">
+                                {formatEntryExit(endpoint.publicAddress, endpoint.effectiveEgressIp) ?? endpoint.publicAddress}
+                              </code>
                               {mode === "bridge" && !server.activeRoute && !infraLoading && vpnItems.length > 0 ? (
                                 <p className="text-xs text-muted-foreground">{t("bridge.addressNoActiveRoute")}</p>
                               ) : null}
@@ -600,6 +615,7 @@ export function NodeRoutesEditor({ initialNodeId }: { initialNodeId: string | nu
                               )
                             }
                             onRefresh={() => void refreshAll(server.id)}
+                            onEditTransport={setEditingTransport}
                           />
 
                           {detailRoutes.drafts.map((route) => (
@@ -614,6 +630,7 @@ export function NodeRoutesEditor({ initialNodeId }: { initialNodeId: string | nu
                               busy={busy}
                               loading={detailLoading}
                               onRefresh={() => void refreshAll(server.id)}
+                              onEditTransport={setEditingTransport}
                               request={request}
                               onRun={(name, action) =>
                                 runForNode(server.id, name, action)
@@ -636,7 +653,7 @@ export function NodeRoutesEditor({ initialNodeId }: { initialNodeId: string | nu
                           <PrepareForm
                             bridges={bridges}
                             busy={busy === `prepare-${server.id}`}
-                            onPrepare={(bridgeId, port) =>
+                            onPrepare={(bridgeId, port, transport, poolSize) =>
                               void runForNode(
                                 server.id,
                                 `prepare-${server.id}`,
@@ -646,6 +663,14 @@ export function NodeRoutesEditor({ initialNodeId }: { initialNodeId: string | nu
                                     server.id,
                                     bridgeId,
                                     port,
+                                    transport
+                                      ? {
+                                          transport,
+                                          ...(transport === "wytunnel" && poolSize !== undefined
+                                            ? { transportConfig: { poolSize } }
+                                            : {}),
+                                        }
+                                      : undefined,
                                   );
                                   return result.created
                                     ? t("bridge.prepared")
@@ -667,6 +692,7 @@ export function NodeRoutesEditor({ initialNodeId }: { initialNodeId: string | nu
                               busy={busy}
                               loading={detailLoading}
                               onRefresh={() => void refreshAll(server.id)}
+                              onEditTransport={setEditingTransport}
                               request={request}
                               onRun={(name, action) =>
                                 runForNode(server.id, name, action)
@@ -691,6 +717,12 @@ export function NodeRoutesEditor({ initialNodeId }: { initialNodeId: string | nu
           </ol>
         )}
       </CardContent>
+      <BridgeTransportDialog
+        route={editingTransport}
+        onClose={() => setEditingTransport(null)}
+        onDone={() => refreshAll(expandedNodeIdRef.current)}
+        request={request}
+      />
     </Card>
   );
 }
@@ -701,12 +733,14 @@ function CurrentAssignment({
   loading,
   onDirect,
   onRefresh,
+  onEditTransport,
 }: {
   routes: NodeBridgeRoutes;
   busy: string | null;
   loading: boolean;
   onDirect: () => void;
   onRefresh: () => void;
+  onEditTransport?: (target: EditableRouteTransportTarget) => void;
 }) {
   const { t, lang } = useT();
   const active = routes.activeRoute;
@@ -736,15 +770,69 @@ function CurrentAssignment({
       {active ? (
         <>
           <BridgeRouteFacts route={active} t={t} lang={lang} />
-          <Button
-            type="button"
-            variant="outline"
-            size="sm"
-            disabled={busy !== null}
-            onClick={onDirect}
-          >
-            {t("bridge.useDirect")}
-          </Button>
+          <div className="flex flex-wrap items-center gap-2">
+            <Button
+              type="button"
+              variant="outline"
+              size="sm"
+              disabled={busy !== null}
+              onClick={onDirect}
+            >
+              {t("bridge.useDirect")}
+            </Button>
+            {onEditTransport ? (
+              <Button
+                type="button"
+                variant="secondary"
+                size="sm"
+                disabled={busy !== null}
+                onClick={() =>
+                  onEditTransport({
+                    id: active.id,
+                    publicUdpPort: active.publicUdpPort,
+                    transport: active.transport,
+                    transportPort: active.transportPort,
+                    transportConfig: active.transportConfig,
+                    label: `${active.bridgeName} :${active.publicUdpPort}`,
+                  })
+                }
+              >
+                <SlidersHorizontal className="h-4 w-4" />
+                {t("bridge.transport.configure")}
+              </Button>
+            ) : null}
+          </div>
+          {active.setupCommands && active.transport === "wytunnel" ? (
+            <details className="rounded-md border px-2 py-1.5">
+              <summary className="cursor-pointer text-xs font-medium">
+                {t("bridge.nodeSetup")}
+              </summary>
+              <div className="mt-2 space-y-2">
+                <CommandBlock
+                  label={t("bridge.wytunnel.nodeSetup")}
+                  command={active.setupCommands.install}
+                />
+                {active.setupCommands.bridgeInstall ? (
+                  <CommandBlock
+                    label={t("bridge.wytunnel.bridgeSetup")}
+                    command={active.setupCommands.bridgeInstall}
+                  />
+                ) : null}
+                {active.setupCommands.disableFrpc ? (
+                  <CommandBlock
+                    label={t("bridge.wytunnel.disableFrpcCmd")}
+                    command={active.setupCommands.disableFrpc}
+                  />
+                ) : null}
+                {active.setupCommands.disableFrps ? (
+                  <CommandBlock
+                    label={t("bridge.wytunnel.disableFrpsCmd")}
+                    command={active.setupCommands.disableFrps}
+                  />
+                ) : null}
+              </div>
+            </details>
+          ) : null}
         </>
       ) : (
         <p className="text-xs text-muted-foreground">{t("bridge.directHint")}</p>
@@ -786,16 +874,36 @@ function PrepareForm({
 }: {
   bridges: Bridge[];
   busy: boolean;
-  onPrepare: (bridgeId: string, port: number | undefined) => void;
+  onPrepare: (
+    bridgeId: string,
+    port: number | undefined,
+    transport?: BridgeRouteTransport,
+    poolSize?: number,
+  ) => void;
 }) {
   const { t } = useT();
   const [bridgeId, setBridgeId] = React.useState("");
   const [port, setPort] = React.useState("");
+  const [transport, setTransport] = React.useState<BridgeRouteTransport>("wytunnel");
+  const [poolSize, setPoolSize] = React.useState(BRIDGE_WYTUNNEL_DEFAULT_POOL_SIZE);
+
+  const handleBridgeChange = (nextBridgeId: string) => {
+    setBridgeId(nextBridgeId);
+    const chosen = bridges.find((b) => b.id === nextBridgeId);
+    if (chosen?.defaultTransport) {
+      setTransport(chosen.defaultTransport);
+    }
+  };
 
   const submit = (event: React.FormEvent) => {
     event.preventDefault();
     if (!bridgeId) return;
-    onPrepare(bridgeId, port.trim() === "" ? undefined : Number(port));
+    onPrepare(
+      bridgeId,
+      port.trim() === "" ? undefined : Number(port),
+      transport,
+      transport === "wytunnel" ? poolSize : undefined,
+    );
     setPort("");
   };
 
@@ -813,7 +921,7 @@ function PrepareForm({
           <div className="grid gap-3 sm:grid-cols-[minmax(0,1fr)_auto] sm:items-end">
             <div className="space-y-1.5">
               <Label htmlFor="route-bridge">{t("bridge.chooseBridge")}</Label>
-              <Select value={bridgeId} onValueChange={setBridgeId} required>
+              <Select value={bridgeId} onValueChange={handleBridgeChange} required>
                 <SelectTrigger id="route-bridge">
                   <SelectValue placeholder={t("bridge.chooseBridgePlaceholder")} />
                 </SelectTrigger>
@@ -835,21 +943,53 @@ function PrepareForm({
           </div>
           <details>
             <summary className="cursor-pointer text-xs font-medium">{t("bridge.prepareOptions")}</summary>
-            <div className="mt-2 space-y-1.5 sm:max-w-40">
-              <Label htmlFor="route-port">{t("bridge.portOverride")}</Label>
-              <Input
-                id="route-port"
-                type="number"
-                min={1}
-                max={65535}
-                placeholder={t("bridge.portAuto")}
-                value={port}
-                onChange={(event) => setPort(event.target.value)}
-                onInvalid={(event) => {
-                  const options = event.currentTarget.closest("details");
-                  if (options) options.open = true;
-                }}
-              />
+            <div className="mt-2 grid gap-3 sm:grid-cols-3">
+              <div className="space-y-1.5">
+                <Label>{t("bridge.transport.label")}</Label>
+                <Select
+                  value={transport}
+                  onValueChange={(v) => setTransport(v as BridgeRouteTransport)}
+                >
+                  <SelectTrigger className="h-9 text-xs">
+                    <SelectValue />
+                  </SelectTrigger>
+                  <SelectContent>
+                    <SelectItem value="wytunnel">{t("bridge.transport.wytunnel")}</SelectItem>
+                    <SelectItem value="frp_tcp">{t("bridge.transport.frp_tcp")}</SelectItem>
+                  </SelectContent>
+                </Select>
+              </div>
+              {transport === "wytunnel" ? (
+                <div className="space-y-1.5">
+                  <Label htmlFor="route-pool-size">{t("bridge.wytunnel.poolSize")}</Label>
+                  <Input
+                    id="route-pool-size"
+                    type="number"
+                    min={0}
+                    max={64}
+                    value={poolSize}
+                    onChange={(event) =>
+                      setPoolSize(Math.max(0, Math.min(64, Number(event.target.value) || 0)))
+                    }
+                  />
+                </div>
+              ) : null}
+              <div className="space-y-1.5">
+                <Label htmlFor="route-port">{t("bridge.portOverride")}</Label>
+                <Input
+                  id="route-port"
+                  type="number"
+                  min={1}
+                  max={65535}
+                  placeholder={t("bridge.portAuto")}
+                  value={port}
+                  onChange={(event) => setPort(event.target.value)}
+                  onInvalid={(event) => {
+                    const options = event.currentTarget.closest("details");
+                    if (options) options.open = true;
+                  }}
+                />
+              </div>
             </div>
           </details>
         </>
@@ -884,6 +1024,7 @@ export function CandidateRoute({
   onRun,
   onActivate,
   onRefresh,
+  onEditTransport,
 }: {
   route: NodeBridgeRoute;
   bridge: Bridge | null;
@@ -894,6 +1035,7 @@ export function CandidateRoute({
   onRun: (name: string, action: () => Promise<string | void>) => Promise<void>;
   onActivate: (registrationMarker?: string) => void;
   onRefresh: () => void;
+  onEditTransport?: (target: EditableRouteTransportTarget) => void;
 }) {
   const { t, lang } = useT();
   const [downloadedMarker, setDownloadedMarker] = React.useState<string | null>();
@@ -951,18 +1093,47 @@ export function CandidateRoute({
 
   const setupNeeded = !retiring && !registered;
   const nodeSetup = route.setupCommands ? (
-    <div className="space-y-2">
-      <p className="text-xs font-medium">{t("bridge.nodeSetup")}</p>
-      <p className="text-xs text-muted-foreground">
-        {t("bridge.nodeSetupCredentials")}{" "}
-        <code className="break-all">/etc/amnezia-node/frp/{route.bridgeId}/</code>.
-      </p>
-      <CommandBlock label={t("bridge.dryRunCommand")} command={route.setupCommands.dryRun} />
-      <CommandBlock label={t("bridge.installCommand")} command={route.setupCommands.install} />
-      {route.setupCommands.checkTls ? (
-        <CommandBlock label={t("bridge.checkTlsCommand")} command={route.setupCommands.checkTls} />
-      ) : null}
-    </div>
+    route.transport === "wytunnel" ? (
+      <div className="space-y-2">
+        <p className="text-xs font-medium">{t("bridge.wytunnel.nodeSetup")}</p>
+        <CommandBlock label={t("bridge.dryRunCommand")} command={route.setupCommands.dryRun} />
+        <CommandBlock label={t("bridge.installCommand")} command={route.setupCommands.install} />
+        {route.setupCommands.bridgeInstall ? (
+          <>
+            <p className="pt-1 text-xs font-medium">{t("bridge.wytunnel.bridgeSetup")}</p>
+            {route.setupCommands.bridgeDryRun ? (
+              <CommandBlock
+                label={t("bridge.dryRunCommand")}
+                command={route.setupCommands.bridgeDryRun}
+              />
+            ) : null}
+            <CommandBlock
+              label={t("bridge.installCommand")}
+              command={route.setupCommands.bridgeInstall}
+            />
+          </>
+        ) : null}
+        {route.setupCommands.disableFrpc ? (
+          <CommandBlock
+            label={t("bridge.wytunnel.disableFrpcCmd")}
+            command={route.setupCommands.disableFrpc}
+          />
+        ) : null}
+      </div>
+    ) : (
+      <div className="space-y-2">
+        <p className="text-xs font-medium">{t("bridge.nodeSetup")}</p>
+        <p className="text-xs text-muted-foreground">
+          {t("bridge.nodeSetupCredentials")}{" "}
+          <code className="break-all">/etc/amnezia-node/frp/{route.bridgeId}/</code>.
+        </p>
+        <CommandBlock label={t("bridge.dryRunCommand")} command={route.setupCommands.dryRun} />
+        <CommandBlock label={t("bridge.installCommand")} command={route.setupCommands.install} />
+        {route.setupCommands.checkTls ? (
+          <CommandBlock label={t("bridge.checkTlsCommand")} command={route.setupCommands.checkTls} />
+        ) : null}
+      </div>
+    )
   ) : null;
   const bridgeSetup = bridge && bridgeNeedsHostSetup(bridge) ? bridge.setupCommands : null;
 
@@ -976,11 +1147,40 @@ export function CandidateRoute({
         <span className="break-all font-mono text-xs">
           {bridgeEntry(route.bridgePublicIpv4, route.publicUdpPort)}/udp
         </span>
+        <BridgeRouteTransportStrip
+          transport={route.transport}
+          transportPort={route.transportPort}
+          transportConfig={route.transportConfig}
+          telemetry={route.telemetry}
+          t={t}
+        />
         <Badge variant={registrationTone(registration.status)}>
           {t(`bridge.obs.${registration.status}`)}
         </Badge>
         {registered ? (
           <Badge variant={verificationTone(verification)}>{t(verificationLabelKey(verification))}</Badge>
+        ) : null}
+        {onEditTransport ? (
+          <Button
+            type="button"
+            variant="ghost"
+            size="sm"
+            className="ml-auto h-7 gap-1 px-2 text-xs"
+            disabled={disabled}
+            onClick={() =>
+              onEditTransport({
+                id: route.id,
+                publicUdpPort: route.publicUdpPort,
+                transport: route.transport,
+                transportPort: route.transportPort,
+                transportConfig: route.transportConfig,
+                label: `${route.bridgeName} :${route.publicUdpPort}`,
+              })
+            }
+          >
+            <SlidersHorizontal className="size-3.5" />
+            {t("bridge.transport.configure")}
+          </Button>
         ) : null}
       </div>
 
@@ -1148,10 +1348,18 @@ export function CandidateRoute({
             </DialogDescription>
           </DialogHeader>
           {route.setupCommands ? (
-            <CommandBlock
-              label={t("bridge.removeCommand")}
-              command={route.setupCommands.remove}
-            />
+            <div className="space-y-2">
+              <CommandBlock
+                label={t("bridge.removeCommand")}
+                command={route.setupCommands.remove}
+              />
+              {route.setupCommands.bridgeRemove ? (
+                <CommandBlock
+                  label={t("bridge.wytunnel.bridgeRemove")}
+                  command={route.setupCommands.bridgeRemove}
+                />
+              ) : null}
+            </div>
           ) : null}
           <DialogFooter>
             <Button type="button" variant="outline" onClick={() => setReleasing(false)}>

@@ -3,6 +3,8 @@ import { keyBridgeModeSchema, publicIpv4Schema } from "./bridges.js";
 import { AWG_CONFIG_LEVELS, awgClientMtuSchema, awgGeneratorSettingsSchema } from "./awgGenerator.js";
 
 export const protocolKindSchema = z.enum(["awg2", "awg3"]);
+/** Whether keys of this protocol support multiple explicit Entry IPs / endpoint variants. */
+export const protocolSupportsEndpoints = (protocol: string): boolean => protocol === "awg3";
 export const keyStateSchema = z.enum([
   "provisioning",
   "active",
@@ -358,7 +360,7 @@ export const createKeyRequestSchema = z
         "vpnBridgeRouteId is required when bridgeMode is 'route' and must be omitted otherwise",
     },
   )
-  .refine((value) => !value.endpointId || value.protocol === "awg3", {
+  .refine((value) => !value.endpointId || protocolSupportsEndpoints(value.protocol), {
     path: ["endpointId"],
     message: "Address selection requires AWG 3.1",
   });
@@ -446,17 +448,32 @@ export function selectDefaultNodeEndpoint<T extends { id: string; ordinal: numbe
     })[0];
 }
 
+export const egressAutoRotatePoolIdsSchema = z.array(z.uuid()).max(32);
+
 export const nodePublicEndpointMutationSchema = z.discriminatedUnion("action", [
   z.object({
     action: z.literal("add"),
     address: publicIpv4Schema,
     name: nodeEndpointNameSchema.optional(),
+    entryName: nodeEndpointNameSchema.optional(),
+    customName: nodeEndpointNameSchema.nullish(),
+    egressIpId: z.uuid().nullish(),
+    egressAutoRotateEnabled: z.boolean().optional(),
+    egressAutoRotatePoolIds: egressAutoRotatePoolIdsSchema.optional(),
+    enabledProtocols: protocolListSchema.min(1).nullish(),
   }).strict(),
   z.object({
     action: z.literal("update"),
     id: z.uuid(),
     name: nodeEndpointNameSchema.optional(),
+    entryName: nodeEndpointNameSchema.optional(),
+    customName: nodeEndpointNameSchema.nullish(),
+    renameEntryGroup: z.boolean().optional(),
+    egressIpId: z.uuid().nullish(),
+    egressAutoRotateEnabled: z.boolean().optional(),
+    egressAutoRotatePoolIds: egressAutoRotatePoolIdsSchema.optional(),
     enabled: z.boolean().optional(),
+    enabledProtocols: protocolListSchema.min(1).nullish(),
     reachabilityEnabled: z.boolean().optional(),
     bridgeMode: endpointBridgeModeSchema.optional(),
     awgGenerator: awgGeneratorSettingsSchema.nullish(),
@@ -466,16 +483,27 @@ export const nodePublicEndpointMutationSchema = z.discriminatedUnion("action", [
   }).strict().refine(
     (fields) =>
       fields.name !== undefined ||
+      fields.entryName !== undefined ||
+      fields.customName !== undefined ||
+      fields.egressIpId !== undefined ||
+      fields.egressAutoRotateEnabled !== undefined ||
+      fields.egressAutoRotatePoolIds !== undefined ||
       fields.enabled !== undefined ||
+      fields.enabledProtocols !== undefined ||
       fields.reachabilityEnabled !== undefined ||
       fields.bridgeMode !== undefined ||
       fields.awgGenerator !== undefined ||
       fields.awgMtu !== undefined ||
       fields.awgDeviceRules !== undefined,
     {
-      message: "An endpoint name, availability, reachability, or bridge setting is required",
+      message: "An endpoint name, exit assignment, auto-rotation, availability, protocols, reachability, or bridge setting is required",
     },
   ),
+  z.object({
+    action: z.literal("remove"),
+    id: z.uuid(),
+    reassignToEndpointId: z.uuid().optional(),
+  }).strict(),
 ]);
 export type NodePublicEndpointMutation = z.infer<typeof nodePublicEndpointMutationSchema>;
 
@@ -485,6 +513,9 @@ export const updateNodeRequestSchema = createNodeRequestSchema
   .extend({
     publicEndpoint: nodePublicEndpointMutationSchema.optional(),
     apiKey: z.string().min(32).max(4_096).optional(),
+    egressBlockSmtp: z.boolean().optional(),
+    egressIsolatePrivate: z.boolean().optional(),
+    egressDefaultIpId: z.uuid().nullable().optional(),
     // Redeclared without their create-time defaults: `.partial()` keeps a
     // `.default()`, so a patch naming one unrelated field would otherwise
     // re-enable a disabled node, reset its capacity and capabilities, and flip
@@ -2471,11 +2502,30 @@ export const userNodeEndpointSchema = z.object({
   name: nodeEndpointNameSchema,
   publicAddress: z.ipv4().optional(),
   recommended: z.boolean().optional(),
+  selectableProtocols: protocolListSchema.optional(),
   reachability: userNodeReachabilitySchema.optional(),
+  status: z.object({ checks: z.array(userServiceStatusSchema) }).optional(),
 });
 export type UserNodeEndpoint = z.infer<typeof userNodeEndpointSchema>;
 
 export const adminNodeEndpointSchema = userNodeEndpointSchema.extend({
+  entryName: z.string().optional(),
+  customName: z.string().nullable().optional(),
+  variantOrdinal: z.int().positive().optional(),
+  egressIpId: z.uuid().nullable().optional(),
+  effectiveEgressIp: z.string().nullable().optional(),
+  egressAutoRotateEnabled: z.boolean().optional(),
+  egressAutoRotatePoolIds: egressAutoRotatePoolIdsSchema.optional(),
+  egressAutoRotatedAt: z.iso.datetime().nullable().optional(),
+  enabledProtocols: protocolListSchema.nullable().optional(),
+  onlinePeerCount: z.int().nonnegative().optional(),
+  onlineByProtocol: z.record(z.string(), z.int().nonnegative()).optional(),
+  assignedKeyCount: z.int().nonnegative().optional(),
+  activeKeyCount: z.int().nonnegative().optional(),
+  keyUpdateNotifiedAt: z.iso.datetime().nullable().optional(),
+  keyUpdateNotifyNote: z.string().nullable().optional(),
+  probeObservedEgressIp: z.string().nullable().optional(),
+  probeEgressMatch: z.boolean().nullable().optional(),
   awgGenerator: awgGeneratorSettingsSchema.nullish(),
   awgMtu: awgClientMtuSchema.nullish(),
   awgDeviceRules: awgDeviceRulesSchema.nullish(),
@@ -2504,6 +2554,10 @@ export const nodePublicEndpointMutationResultSchema = z.object({
     reachabilityEnabled: true,
   }).extend({
     bridgeMode: endpointBridgeModeSchema,
+    egressAutoRotateEnabled: z.boolean().optional(),
+    egressAutoRotatePoolIds: egressAutoRotatePoolIdsSchema.optional(),
+    egressAutoRotatedAt: z.iso.datetime().nullable().optional(),
+    enabledProtocols: protocolListSchema.nullable().optional(),
     awgGenerator: awgGeneratorSettingsSchema.nullish(),
     awgMtu: awgClientMtuSchema.nullish(),
     awgDeviceRules: awgDeviceRulesSchema.nullish(),
@@ -2656,6 +2710,49 @@ export const keyRulesUpdateSchema = z.object({
 });
 export type KeyRulesUpdate = z.infer<typeof keyRulesUpdateSchema>;
 
+export const KEY_UPDATE_NOTIFY_NOTE_MAX_LENGTH = 300;
+
+export const keyServerUpdateScopeSchema = z.enum(["node", "exit", "endpoint"]);
+export type KeyServerUpdateScope = z.infer<typeof keyServerUpdateScopeSchema>;
+
+/**
+ * User-visible server-change update notice on a key card. Deliberately never
+ * exposes internal Exit IPs, internal node names, or admin topology details.
+ */
+export const keyServerUpdateNoticeSchema = z.object({
+  scope: keyServerUpdateScopeSchema,
+  notifiedAt: z.iso.datetime(),
+  note: z.string().max(KEY_UPDATE_NOTIFY_NOTE_MAX_LENGTH).nullable().optional(),
+});
+export type KeyServerUpdateNotice = z.infer<typeof keyServerUpdateNoticeSchema>;
+
+export const notifyKeyUpdateRequestSchema = z
+  .object({
+    note: z
+      .string()
+      .nullable()
+      .optional()
+      .transform((value) => {
+        if (value === undefined || value === null) return null;
+        const normalized = value.replace(/[\r\n\t]+/g, " ").trim();
+        return normalized.length > 0 ? normalized : null;
+      })
+      .refine(
+        (value) => value === null || value.length <= KEY_UPDATE_NOTIFY_NOTE_MAX_LENGTH,
+        `Note must be at most ${KEY_UPDATE_NOTIFY_NOTE_MAX_LENGTH} characters`,
+      ),
+  })
+  .default({ note: null });
+export type NotifyKeyUpdateRequest = z.infer<typeof notifyKeyUpdateRequestSchema>;
+
+export const notifyKeyUpdateResultSchema = z.object({
+  scope: keyServerUpdateScopeSchema,
+  notifiedAt: z.iso.datetime().nullable(),
+  note: z.string().nullable(),
+  affectedActiveKeys: z.int().nonnegative(),
+});
+export type NotifyKeyUpdateResult = z.infer<typeof notifyKeyUpdateResultSchema>;
+
 export * from "./bridges.js";
 export * from "./bridgeAgent.js";
 export * from "./bridgeAgentUpdate.js";
@@ -2664,3 +2761,4 @@ export * from "./bridgeRollback.js";
 export * from "./ruleSources.js";
 export * from "./ipv6RejectStub.js";
 export * from "./awgGenerator.js";
+export * from "./egress.js";

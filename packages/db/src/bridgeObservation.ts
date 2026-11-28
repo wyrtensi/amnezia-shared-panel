@@ -57,7 +57,7 @@ const queuePollAlert = async (
 
 const trackManagementIncident = async (
   tx: DbTransaction,
-  bridge: Pick<typeof vpnBridges.$inferSelect, "id" | "name" | "publicIpv4">,
+  bridge: Pick<typeof vpnBridges.$inferSelect, "id" | "name" | "publicIpv4" | "frpsEnabled">,
   { outcome, startedAt, timeZone }: BridgePollWrite,
 ) => {
   const [prior] = await tx.select().from(bridgeReachabilityState)
@@ -67,8 +67,16 @@ const trackManagementIncident = async (
     failingSince: prior.mgmtFailingSince,
     alertedAt: prior.mgmtAlertedAt,
   } : EMPTY_BRIDGE_INCIDENT;
-  const healthy = outcome.kind === "ok" && outcome.frpsReachable;
-  const detail = healthy ? null : outcome.errorCode ?? "FRPS_UNREACHABLE";
+  const frpsExpected = bridge.frpsEnabled;
+  const frpsDisabledMismatch =
+    bridge.frpsEnabled && outcome.kind === "ok" && outcome.frpsEnabled === false;
+  const frpsHealthy = !frpsExpected || (outcome.kind === "ok" && outcome.frpsReachable);
+  const healthy = outcome.kind === "ok" && frpsHealthy;
+  const detail = healthy
+    ? null
+    : frpsDisabledMismatch
+      ? "FRPS_DISABLED_UNEXPECTEDLY"
+      : (outcome.errorCode ?? "FRPS_UNREACHABLE");
   const status = healthy ? "ok" : "failed";
   const { state, notice } = advanceBridgeIncident(previous, status, startedAt, BRIDGE_POLL_FAIL_THRESHOLD);
   const values = {
@@ -86,11 +94,13 @@ const trackManagementIncident = async (
       notice === "down"
         ? `${label}: ${outcome.kind === "ok" ? "FRP-сервер" : "агент управления"} недоступен (${detail})` +
           alertSince(state.failingSince ?? startedAt, timeZone)
-        : `${label}: агент управления и FRP-сервер доступны`);
+        : frpsExpected
+          ? `${label}: агент управления и FRP-сервер доступны`
+          : `${label}: агент управления доступен`);
   }
 };
 
-const trackFrpRouteIncident = async (
+const trackRouteIncident = async (
   tx: DbTransaction,
   bridge: Pick<typeof vpnBridges.$inferSelect, "id" | "name" | "publicIpv4">,
   route: typeof vpnBridgeRoutes.$inferSelect,
@@ -106,9 +116,13 @@ const trackFrpRouteIncident = async (
   if (notice) {
     const [node] = await tx.select({ name: nodes.name }).from(nodes).where(eq(nodes.id, route.nodeId));
     const label = `Маршрут ${node?.name ?? route.nodeId} → мост ${bridge.name} (${bridge.publicIpv4}:${route.publicUdpPort})`;
+    const transportDownText =
+      route.transport === "wytunnel"
+        ? "wytunnel не подключён к мосту"
+        : "frpc не подключён к мосту";
     await queuePollAlert(tx, "route", `${bridge.id}:${route.id}`, route.alertedAt ?? at, notice,
       notice === "down"
-        ? `${label} недоступен: frpc не подключён к мосту` + alertSince(state.failingSince ?? at, timeZone)
+        ? `${label} недоступен: ${transportDownText}` + alertSince(state.failingSince ?? at, timeZone)
         : `${label} восстановлен`);
   }
   return {
@@ -183,6 +197,7 @@ export const applyBridgePollResult = async (
       id: vpnBridges.id,
       name: vpnBridges.name,
       publicIpv4: vpnBridges.publicIpv4,
+      frpsEnabled: vpnBridges.frpsEnabled,
       reachabilityEnabled: vpnBridges.reachabilityEnabled,
       managementEnrolledAt: vpnBridges.managementEnrolledAt,
       lastPollAttemptAt: vpnBridges.lastPollAttemptAt,
@@ -201,12 +216,10 @@ export const applyBridgePollResult = async (
 
   const { outcome, startedAt, timeZone } = write;
   if (bridge.reachabilityEnabled) await trackManagementIncident(tx, bridge, write);
-  if (outcome.kind !== "ok" || !outcome.frpsReachable) {
+  if (outcome.kind !== "ok") {
     // An unknown observation interrupts pending failures. An open incident
     // still needs a confirmed online registration to recover.
     await interruptPendingRouteStreak(tx, write.bridgeId);
-  }
-  if (outcome.kind !== "ok") {
     await tx
       .update(vpnBridges)
       .set({
@@ -221,6 +234,7 @@ export const applyBridgePollResult = async (
     return "written";
   }
 
+  const frpsDisabledMismatch = bridge.frpsEnabled && outcome.frpsEnabled === false;
   const summary = {
     managementStatus: "ok" as const,
     agentVersion: outcome.agentVersion,
@@ -236,13 +250,6 @@ export const applyBridgePollResult = async (
     lastObservedAt: startedAt,
     lastPollAttemptAt: startedAt,
   };
-  if (!outcome.frpsReachable) {
-    await tx
-      .update(vpnBridges)
-      .set({ ...summary, lastErrorCode: outcome.errorCode ?? "FRPS_UNREACHABLE" })
-      .where(eq(vpnBridges.id, write.bridgeId));
-    return "written";
-  }
 
   const routes = await tx
     .select()
@@ -252,8 +259,80 @@ export const applyBridgePollResult = async (
     .for("update");
   const byName = new Map(outcome.proxies.map((proxy) => [proxy.proxyId, proxy]));
   const unreadable = new Set(outcome.unreadableProxyIds);
+  const unreadableWytunnel = new Set(outcome.unreadableWytunnelRouteIds ?? []);
+  const wytunnelByRoute =
+    outcome.wytunnelInstances !== undefined
+      ? new Map(outcome.wytunnelInstances.map((inst) => [inst.routeId, inst]))
+      : null;
   let portMismatch = false;
   for (const route of routes) {
+    if (route.transport === "wytunnel") {
+      // An older bridge-agent without wytunnel.v1 (or missing /run/amnezia-wytunnel)
+      // omits `wytunnel`, and malformed entries appear in unreadableWytunnel; leave
+      // observedAt behind the bridge poll so routes read Unknown instead of offline.
+      if (wytunnelByRoute === null || unreadableWytunnel.has(route.id)) {
+        await interruptPendingRouteStreak(tx, write.bridgeId, route.id);
+        continue;
+      }
+      const inst = wytunnelByRoute.get(route.id);
+      if (inst && inst.remotePort !== null && inst.remotePort !== undefined && inst.remotePort !== route.publicUdpPort) {
+        portMismatch = true;
+      }
+      const online =
+        inst !== undefined && inst.online && inst.remotePort === route.publicUdpPort;
+      const marker = online && inst ? inst.registrationMarker : null;
+      const telemetry = inst?.telemetry ?? null;
+      const markerChanged = marker !== route.observedRegistrationMarker;
+      const verificationOutdated =
+        markerChanged &&
+        route.verifiedRegistrationMarker !== marker &&
+        (route.verifiedAt !== null ||
+          route.verificationResult !== null ||
+          route.verificationMethod !== null);
+      await tx
+        .update(vpnBridgeRoutes)
+        .set({
+          observedOnline: online,
+          observedRegistrationMarker: marker,
+          observedAt: startedAt,
+          observedTelemetry: telemetry,
+          ...(route.state === "active" && bridge.reachabilityEnabled
+            ? await trackRouteIncident(tx, bridge, route, online, startedAt, timeZone)
+            : CLEARED_BRIDGE_ROUTE_ALERT),
+          ...(verificationOutdated ? { ...CLEARED_VERIFICATION, updatedAt: new Date() } : {}),
+        })
+        .where(eq(vpnBridgeRoutes.id, route.id));
+      continue;
+    }
+
+    if (!outcome.frpsReachable) {
+      if (outcome.frpsEnabled === false) {
+        // frps is intentionally disabled on this bridge host, so any remaining
+        // frp_tcp route is definitively offline (allowing retiring routes to be released).
+        const verificationOutdated =
+          route.observedRegistrationMarker !== null &&
+          (route.verifiedAt !== null ||
+            route.verificationResult !== null ||
+            route.verificationMethod !== null);
+        await tx
+          .update(vpnBridgeRoutes)
+          .set({
+            observedOnline: false,
+            observedRegistrationMarker: null,
+            observedAt: startedAt,
+            observedTelemetry: null,
+            ...(route.state === "active" && bridge.reachabilityEnabled
+              ? await trackRouteIncident(tx, bridge, route, false, startedAt, timeZone)
+              : CLEARED_BRIDGE_ROUTE_ALERT),
+            ...(verificationOutdated ? { ...CLEARED_VERIFICATION, updatedAt: new Date() } : {}),
+          })
+          .where(eq(vpnBridgeRoutes.id, route.id));
+      } else {
+        await interruptPendingRouteStreak(tx, write.bridgeId, route.id);
+      }
+      continue;
+    }
+
     // The agent reported an entry under this route's name that could not be
     // read: this poll says nothing about the route. Left as it was, its
     // `observedAt` predates the bridge's latest poll, so it reads Unknown.
@@ -281,18 +360,27 @@ export const applyBridgePollResult = async (
         observedOnline: online,
         observedRegistrationMarker: marker,
         observedAt: startedAt,
+        observedTelemetry: null,
         ...(route.state === "active" && bridge.reachabilityEnabled
-          ? await trackFrpRouteIncident(tx, bridge, route, online, startedAt, timeZone)
+          ? await trackRouteIncident(tx, bridge, route, online, startedAt, timeZone)
           : CLEARED_BRIDGE_ROUTE_ALERT),
         ...(verificationOutdated ? { ...CLEARED_VERIFICATION, updatedAt: new Date() } : {}),
       })
       .where(eq(vpnBridgeRoutes.id, route.id));
   }
+  const lastErrorCode =
+    frpsDisabledMismatch
+      ? "FRPS_DISABLED_UNEXPECTEDLY"
+      : bridge.frpsEnabled && !outcome.frpsReachable
+        ? (outcome.errorCode ?? "FRPS_UNREACHABLE")
+        : portMismatch
+          ? "ROUTE_PORT_MISMATCH"
+          : outcome.errorCode;
   await tx
     .update(vpnBridges)
     .set({
       ...summary,
-      lastErrorCode: portMismatch ? "ROUTE_PORT_MISMATCH" : outcome.errorCode,
+      lastErrorCode,
     })
     .where(eq(vpnBridges.id, write.bridgeId));
   return "written";

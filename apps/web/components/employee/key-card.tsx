@@ -35,6 +35,7 @@ import {
   KeyInternalNameDialog,
 } from "@/components/key-internal-name-dialog";
 import { KeyBridgeBadge } from "@/components/key-bridge-badge";
+import { KeyEgressBadge } from "@/components/key-egress-badge";
 import { KeyRenameDialog } from "@/components/employee/key-rename-dialog";
 import { configUrl } from "@/lib/api";
 import { formatDate } from "@/lib/format";
@@ -254,6 +255,7 @@ export function KeyCard({
               {t(PROTOCOL_LABEL[keyView.protocol] ?? keyView.protocol)}
             </Badge>
             {isAdmin ? <KeyBridgeBadge bridge={keyView.bridge} /> : null}
+            {isAdmin ? <KeyEgressBadge egress={keyView.egress} /> : null}
           </div>
 
           {/* The operator-only note, on the administrator's own key. Same framed
@@ -295,6 +297,36 @@ export function KeyCard({
                 </Tooltip>
               ) : null}
             </div>
+          ) : null}
+
+          {active && keyView.serverUpdate ? (
+            <Callout
+              tone="warning"
+              icon={<TriangleAlert className="h-4 w-4 text-warning" />}
+              title={t("keyCard.serverUpdateTitle")}
+            >
+              <span className="block">{t("keyCard.serverUpdateBody")}</span>
+              {keyView.serverUpdate.note ? (
+                <span className="mt-1 block text-foreground">
+                  {t("keyCard.rulesUpdatedNote", {
+                    note: keyView.serverUpdate.note,
+                  })}
+                </span>
+              ) : null}
+              {me.policy.allowConfigRedownload &&
+              !(keyView.rulesOutdated && keyView.rulesUpdate?.level === "important") ? (
+                <Button
+                  type="button"
+                  size="sm"
+                  className="mt-2 h-auto min-h-8 max-w-full whitespace-normal py-1 text-left"
+                  disabled={busy}
+                  onClick={() => guardKeyAccess(onShowConfig)}
+                >
+                  <Download className="h-4 w-4" />
+                  {t("keyCard.redownload")}
+                </Button>
+              ) : null}
+            </Callout>
           ) : null}
 
           {active &&

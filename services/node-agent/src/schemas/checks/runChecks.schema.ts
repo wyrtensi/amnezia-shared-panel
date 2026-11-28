@@ -1,5 +1,6 @@
 import { SwaggerContract } from "@/contracts/swagger";
 import { AppFastifySchema } from "@/types/shared";
+import { IPV4_PATTERN } from "@/schemas/server/egress.schema";
 
 /**
  * Проверки сервисов приходят от панели и выполняются на ноде.
@@ -22,6 +23,12 @@ export const runChecksSchema = {
     required: ["checks"],
     additionalProperties: false,
     properties: {
+      egressIpv4: {
+        type: "string",
+        pattern: IPV4_PATTERN,
+        description:
+          "Optional host Exit IPv4 to source-bind probes that do not override probe.egressIpv4.",
+      },
       checks: {
         type: "array",
         minItems: 1,
@@ -43,6 +50,7 @@ export const runChecksSchema = {
               required: ["kind"],
               properties: {
                 kind: { type: "string", example: "http" },
+                egressIpv4: { type: "string", pattern: IPV4_PATTERN },
               },
               additionalProperties: true,
             },

@@ -130,10 +130,13 @@ test("the request is verified through /proc, not through a path test", async () 
   );
 });
 
-test("the result is written to a fresh mktemp file and renamed", async () => {
+test("the result is staged outside the spool and renamed atomically", async () => {
   const script = await readFile(scriptUrl, "utf8");
 
-  assert.match(script, /mktemp "\$\{SPOOL_DIR\}\/result\.XXXXXX"/);
+  assert.match(script, /RESULT_STAGING_DIR="\$\{NODE_CAPACITY_STAGING_DIR:-\$\(dirname -- "\$SPOOL_DIR"\)\}"/);
+  assert.match(script, /stat -c %d "\$RESULT_STAGING_DIR"/);
+  assert.match(script, /mktemp "\$\{RESULT_STAGING_DIR\}\/result\.XXXXXX"/);
+  assert.match(script, /chmod 0644 "\$tmp"/);
   assert.match(script, /mv -f "\$tmp" "\$RESULT"/);
   assert.doesNotMatch(
     script,

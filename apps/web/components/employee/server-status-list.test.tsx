@@ -91,4 +91,33 @@ describe("ServerStatusList", () => {
     expect(multi).not.toContain("через мост");
     expect(multi).not.toContain("via bridge");
   });
+
+  it("renders per-endpoint ServiceCheckChips in ServerAddressList and keeps ServerStatusList compact", () => {
+    const endpointsWithChecks = [
+      {
+        id: "ep-1",
+        ordinal: 1,
+        name: "Edge NL",
+        status: { checks: [{ name: "Google Flow", state: "works" as const }] },
+      },
+      {
+        id: "ep-2",
+        ordinal: 2,
+        name: "Edge NL — Clean",
+        status: { checks: [{ name: "Google Flow", state: "unavailable" as const }] },
+      },
+    ];
+    const compact = renderToStaticMarkup(
+      <ServerStatusList
+        nodes={[node("Edge NL", { publicEndpoints: endpointsWithChecks })]}
+      />,
+    );
+    expect(compact).not.toContain("Google Flow");
+
+    const detailed = renderToStaticMarkup(
+      <ServerAddressList addresses={endpointsWithChecks} />,
+    );
+    expect(detailed).toContain("Google Flow: работает");
+    expect(detailed).toContain("Google Flow: недоступен");
+  });
 });

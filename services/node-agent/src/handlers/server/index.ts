@@ -8,3 +8,6 @@ export * from "./requestServerUpdate.handler";
 export * from "./getServerCapacity.handler";
 export * from "./requestServerCapacity.handler";
 export * from "./setServerIpv6RejectStub.handler";
+export * from "./putServerEgress.handler";
+export * from "./postServerEgressVerify.handler";
+export * from "./postServerEgressMode.handler";

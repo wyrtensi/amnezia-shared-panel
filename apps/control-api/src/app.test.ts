@@ -56,6 +56,8 @@ const bridgeRouteFixture = {
   bridgeId: bridgeFixture.id,
   publicUdpPort: 41000,
   state: "draft" as const,
+  transport: "frp_tcp" as const,
+  transportPort: null,
   frpProxyName: "awg-route-0d9e8f7a-6b5c-4d3e-9f2a-1b0c9d8e7f6a",
   observedOnline: null,
   observedRegistrationMarker: null,
@@ -235,6 +237,7 @@ createNode: vi.fn(() => Promise.resolve({ id: "node-1" })),
       publicUdpPort: 41000,
     }),
   ),
+  updateBridgeRouteTransport: vi.fn(() => Promise.resolve(bridgeRouteFixture)),
   listInfrastructure: vi.fn(() => Promise.resolve([])),
   getBridgeRouteTestConfig: vi.fn(() =>
     Promise.resolve({
@@ -253,6 +256,39 @@ createNode: vi.fn(() => Promise.resolve({ id: "node-1" })),
   ),
   getBridgeAgentUpdate: vi.fn(() => Promise.reject(new Error("not stubbed"))),
   requestBridgeAgentUpdate: vi.fn(() => Promise.reject(new Error("not stubbed"))),
+  listNodeEgressIps: vi.fn(() => Promise.resolve([])),
+  createNodeEgressIp: vi.fn(() => Promise.reject(new Error("not stubbed"))),
+  updateNodeEgressIp: vi.fn(() => Promise.reject(new Error("not stubbed"))),
+  deleteNodeEgressIp: vi.fn(() => Promise.resolve({ id: "ip-1", deleted: true, affectedEndpoints: 0 })),
+  swapNodeEgressIp: vi.fn(() => Promise.reject(new Error("not stubbed"))),
+  verifyNodeEgressIp: vi.fn(() => Promise.reject(new Error("not stubbed"))),
+  setNodeEgressMode: vi.fn(() =>
+    Promise.resolve({ nodeId: bridgeNodeId, mode: "routed" as const, state: "switching" as const, queued: true }),
+  ),
+  adoptNodeEgressMode: vi.fn(() =>
+    Promise.resolve({ nodeId: bridgeNodeId, mode: "masquerade" as const, state: "idle" as const }),
+  ),
+  reassignKeyEndpoint: vi.fn(() =>
+    Promise.resolve({ id: "key-1", nodeId: bridgeNodeId, endpointId: "ep-2", previousEndpointId: "ep-1" }),
+  ),
+  notifyNodeKeyUpdate: vi.fn(() =>
+    Promise.resolve({ scope: "node" as const, notifiedAt: "2026-11-28T00:00:00.000Z", note: null, affectedActiveKeys: 2 }),
+  ),
+  clearNodeKeyUpdate: vi.fn(() =>
+    Promise.resolve({ scope: "node" as const, notifiedAt: null, note: null, affectedActiveKeys: 0 }),
+  ),
+  notifyNodeEgressIpKeyUpdate: vi.fn(() =>
+    Promise.resolve({ scope: "exit" as const, notifiedAt: "2026-11-28T00:00:00.000Z", note: null, affectedActiveKeys: 1 }),
+  ),
+  clearNodeEgressIpKeyUpdate: vi.fn(() =>
+    Promise.resolve({ scope: "exit" as const, notifiedAt: null, note: null, affectedActiveKeys: 0 }),
+  ),
+  notifyNodeEndpointKeyUpdate: vi.fn(() =>
+    Promise.resolve({ scope: "endpoint" as const, notifiedAt: "2026-11-28T00:00:00.000Z", note: null, affectedActiveKeys: 1 }),
+  ),
+  clearNodeEndpointKeyUpdate: vi.fn(() =>
+    Promise.resolve({ scope: "endpoint" as const, notifiedAt: null, note: null, affectedActiveKeys: 0 }),
+  ),
 });
 
 describe("control API identity boundary", () => {
@@ -1645,6 +1681,62 @@ describe("client release routes", () => {
     expect(clientReleaseResolver.refresh).not.toHaveBeenCalled();
     await app.close();
   });
+
+  it("exposes GET /api/admin/wytunnel/release and POST /api/admin/wytunnel/release/refresh for admins only", async () => {
+    const wtSnapshot = {
+      repository: "wyrtensi/wytunnel",
+      tag: "v0.2.0",
+      version: "0.2.0",
+      htmlUrl: "https://github.com/wyrtensi/wytunnel/releases/tag/v0.2.0",
+      publishedAt: "2026-11-28T14:00:00Z",
+      source: "github" as const,
+      assets: { amd64: null, arm64: null },
+    };
+    const wytunnelReleaseResolver = {
+      get: vi.fn(() => Promise.resolve(wtSnapshot)),
+      refresh: vi.fn(() => Promise.resolve(wtSnapshot)),
+    };
+    const adminService = createService();
+    const admin = { ...user, role: "admin" as const };
+    vi.mocked(adminService.resolveIdentity).mockResolvedValue(admin);
+    const adminApp = await buildApp({
+      service: adminService,
+      environment: "development",
+      allowDevIdentity: true,
+      wytunnelReleaseResolver,
+    });
+
+    const getRes = await adminApp.inject({
+      method: "GET",
+      url: "/api/admin/wytunnel/release",
+      headers: { "x-dev-user-email": admin.email },
+    });
+    expect(getRes.statusCode).toBe(200);
+    expect(getRes.json()).toEqual(wtSnapshot);
+
+    const refreshRes = await adminApp.inject({
+      method: "POST",
+      url: "/api/admin/wytunnel/release/refresh",
+      headers: { "x-dev-user-email": admin.email },
+    });
+    expect(refreshRes.statusCode).toBe(200);
+    expect(wytunnelReleaseResolver.refresh).toHaveBeenCalledTimes(1);
+    await adminApp.close();
+
+    const userApp = await buildApp({
+      service: createService(),
+      environment: "development",
+      allowDevIdentity: true,
+      wytunnelReleaseResolver,
+    });
+    const userForbidden = await userApp.inject({
+      method: "GET",
+      url: "/api/admin/wytunnel/release",
+      headers: { "x-dev-user-email": user.email },
+    });
+    expect(userForbidden.statusCode).toBe(403);
+    await userApp.close();
+  });
 });
 
 describe("service check routes", () => {
@@ -2747,6 +2839,107 @@ describe("client parameters routes", () => {
     }
     expect(service.getKeyClientParameters).not.toHaveBeenCalled();
     expect(service.getNodeClientParameters).not.toHaveBeenCalled();
+    await app.close();
+  });
+});
+
+describe("node egress and key endpoint reassignment routes", () => {
+  const admin = { ...user, role: "admin" as const };
+  const nodeId = bridgeNodeId;
+  const ipId = "2d6aee6e-626d-49c8-8a4a-6eb37e527e52";
+  const keyId = "3e7bff7f-737e-4ad9-9b5b-7fc48f638f63";
+  const endpointId = "4f8c0080-848f-4be0-ac6c-80d590749074";
+  const exitView = {
+    id: ipId,
+    nodeId,
+    ipv4: "1.1.1.1",
+    label: "Exit One",
+    interfaceName: "eth0",
+    gatewayIpv4: null,
+    routingTableId: 200,
+    dnsPrimary: "1.1.1.1",
+    dnsSecondary: null,
+    amneziaDnsDnat: true,
+    enforceDnsDnat: false,
+    allowAsEntry: false,
+    enabled: true,
+    hostState: "pending" as const,
+    hostDetail: null,
+    observedSubnetCidr: null,
+    detectedGatewayIpv4: null,
+    txBytes: "0",
+    txPackets: "0",
+    hostObservedAt: null,
+    subnetWarning: null,
+    assignedEndpointCount: 0,
+  };
+
+  it("handles admin egress CRUD, swap, verify, mode switch, adopt, and key reassign", async () => {
+    const service = createService();
+    vi.mocked(service.resolveIdentity).mockResolvedValue(admin);
+    vi.mocked(service.listNodeEgressIps).mockResolvedValue([exitView]);
+    vi.mocked(service.createNodeEgressIp).mockResolvedValue(exitView);
+    vi.mocked(service.updateNodeEgressIp).mockResolvedValue({ ...exitView, label: "Updated" });
+    vi.mocked(service.swapNodeEgressIp).mockResolvedValue({
+      ip: { ...exitView, ipv4: "8.8.8.8" },
+      replacedIpv4: "1.1.1.1",
+      affectedEndpoints: 1,
+    });
+    vi.mocked(service.verifyNodeEgressIp).mockResolvedValue({
+      ok: true,
+      egressIpv4: "1.1.1.1",
+      observedIp: "1.1.1.1",
+      ipMatch: true,
+      httpLatencyMs: 25,
+      dnsOk: true,
+      dnsServer: "1.1.1.1",
+      dnsLatencyMs: 9,
+    });
+    const app = await buildApp({ service, environment: "development", allowDevIdentity: true });
+    const headers = { "x-dev-user-email": admin.email };
+
+    expect((await app.inject({ method: "GET", url: `/api/admin/nodes/${nodeId}/egress-ips`, headers })).statusCode).toBe(200);
+    expect(
+      (await app.inject({ method: "POST", url: `/api/admin/nodes/${nodeId}/egress-ips`, headers, payload: { ipv4: "1.1.1.1", label: "Exit One" } })).statusCode,
+    ).toBe(201);
+    expect(
+      (await app.inject({ method: "PATCH", url: `/api/admin/nodes/${nodeId}/egress-ips/${ipId}`, headers, payload: { label: "Updated" } })).statusCode,
+    ).toBe(200);
+    expect(
+      (await app.inject({ method: "POST", url: `/api/admin/nodes/${nodeId}/egress-ips/${ipId}/swap`, headers, payload: { ipv4: "8.8.8.8" } })).statusCode,
+    ).toBe(200);
+    expect(
+      (await app.inject({ method: "POST", url: `/api/admin/nodes/${nodeId}/egress-ips/${ipId}/verify`, headers, payload: {} })).statusCode,
+    ).toBe(200);
+    expect(
+      (await app.inject({ method: "PUT", url: `/api/admin/nodes/${nodeId}/egress-mode`, headers, payload: { mode: "routed" } })).statusCode,
+    ).toBe(200);
+    expect(
+      (await app.inject({ method: "POST", url: `/api/admin/nodes/${nodeId}/egress-mode/adopt`, headers })).statusCode,
+    ).toBe(200);
+    expect(
+      (await app.inject({ method: "PATCH", url: `/api/admin/keys/${keyId}/endpoint`, headers, payload: { endpointId } })).statusCode,
+    ).toBe(200);
+    expect(
+      (await app.inject({ method: "DELETE", url: `/api/admin/nodes/${nodeId}/egress-ips/${ipId}`, headers })).statusCode,
+    ).toBe(200);
+    await app.close();
+  });
+
+  it("refuses non-admins and rejects invalid egress payloads", async () => {
+    const service = createService();
+    vi.mocked(service.resolveIdentity).mockResolvedValue(user);
+    const app = await buildApp({ service, environment: "development", allowDevIdentity: true });
+    const headers = { "x-dev-user-email": user.email };
+    expect((await app.inject({ method: "GET", url: `/api/admin/nodes/${nodeId}/egress-ips`, headers })).statusCode).toBe(403);
+    expect((await app.inject({ method: "PUT", url: `/api/admin/nodes/${nodeId}/egress-mode`, headers, payload: { mode: "routed" } })).statusCode).toBe(403);
+    expect((await app.inject({ method: "PATCH", url: `/api/admin/keys/${keyId}/endpoint`, headers, payload: { endpointId } })).statusCode).toBe(403);
+
+    vi.mocked(service.resolveIdentity).mockResolvedValue(admin);
+    const adminHeaders = { "x-dev-user-email": admin.email };
+    expect(
+      (await app.inject({ method: "POST", url: `/api/admin/nodes/${nodeId}/egress-ips`, headers: adminHeaders, payload: { ipv4: "10.0.0.5" } })).statusCode,
+    ).toBe(400);
     await app.close();
   });
 });

@@ -1,3 +1,25 @@
+FROM golang:1.26.11-bookworm@sha256:ea47ee45f1284d60f9cc09cb2c3bb4f508c256b640bd8bb30342ff13d1adcb52 AS shim_build
+ARG SHIM_OVERRIDE_MODE=""
+WORKDIR /shim-build
+COPY --from=deploy shim-override/shim-override.env /tmp/shim-override.env
+COPY --from=deploy shim-override/build-shims.sh /tmp/build-shims.sh
+RUN tr -d '\r' </tmp/build-shims.sh >/tmp/build-shims-lf.sh \
+  && tr -d '\r' </tmp/shim-override.env >/tmp/shim-override-lf.env \
+  && SHIM_OVERRIDE_MODE_ARG="${SHIM_OVERRIDE_MODE}" bash /tmp/build-shims-lf.sh /tmp/shim-override-lf.env
+
+FROM golang:1.24.13-bookworm@sha256:98d673f18a1aac43da744209873cb79323e11706f909251bcfb131828b95559d AS egressd_build
+WORKDIR /egressd
+ARG APP_VERSION=development
+
+COPY --from=egressd go.mod go.sum ./
+RUN go mod download
+
+COPY --from=egressd . .
+RUN CGO_ENABLED=0 GOOS=linux GOARCH=amd64 go build \
+  -trimpath \
+  -ldflags="-s -w -X main.Version=${APP_VERSION}" \
+  -o /out/amnezia-egressd ./cmd/amnezia-egressd
+
 FROM node:24.22.2-bookworm-slim@sha256:01d566e8d94d8c619591d78652babfccd3c6992a3dffa9ed5ab39e11cf6c70e9 AS deps
 WORKDIR /app
 
@@ -53,8 +75,34 @@ COPY package.json ./
 # build context (infra/node) because compose.yaml lives outside this build's
 # context; .github/workflows/release-node-agent.yml and
 # infra/node/scripts/build-node-agent.sh both pass it.
+COPY --from=egressd_build /out/amnezia-egressd /opt/node-agent/bin/amnezia-egressd
+COPY --from=shim_build /out/shim-override.env /opt/node-agent/bin/shim-override.env
+COPY --from=shim_build /out/shims/ /opt/node-agent/bin/shims/
 COPY --from=deploy compose.yaml /opt/node-agent/deploy/
-COPY --from=deploy scripts/awg3-entrypoint.sh scripts/agent-update.sh /opt/node-agent/deploy/scripts/
+COPY --from=deploy \
+  scripts/awg3-entrypoint.sh \
+  scripts/awg3-geometry.sh \
+  scripts/agent-update.sh \
+  scripts/capacity-apply.sh \
+  scripts/cotenants.sh \
+  scripts/install-agent-updater.sh \
+  scripts/install-capacity-applier.sh \
+  scripts/install-egressd.sh \
+  scripts/install-host-services.sh \
+  scripts/install-wytunnel-node.sh \
+  scripts/set-capacity.sh \
+  scripts/switch-egress-mode.sh \
+  scripts/common.sh \
+  scripts/backup.sh \
+  scripts/rollback.sh \
+  scripts/preflight.sh \
+  scripts/deploy.sh \
+  /opt/node-agent/deploy/scripts/
+COPY --from=deploy \
+  systemd/amnezia-egressd.service \
+  systemd/amnezia-node-capacity.service \
+  systemd/amnezia-node-agent-update.service \
+  /opt/node-agent/deploy/systemd/
 
 EXPOSE 4001
 

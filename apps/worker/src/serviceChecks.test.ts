@@ -2,6 +2,7 @@ import { describe, expect, it } from "vitest";
 import {
   selectDueChecks,
   toCheckRequests,
+  toEgressResultRows,
   toResultRows,
   type NodeServiceCheck,
   type PreviousResult,
@@ -270,5 +271,39 @@ describe("toResultRows", () => {
     ]);
     const [row] = toResultRows("node-1", [failed], seen, now);
     expect(row?.failingSince).toEqual(since);
+  });
+});
+
+describe("toEgressResultRows", () => {
+  const failed = {
+    id: check.id,
+    status: "failed" as const,
+    httpStatus: 200,
+    latencyMs: 412,
+    finalUrl: "https://labs.google/fx/tools/flow/unsupported-country",
+    detail: 'final URL contains "unsupported-country"',
+  };
+
+  it("records egressIpId and preserves failingSince per exit IP", () => {
+    const since = new Date("2026-09-02T08:00:00.000Z");
+    const seen = new Map<string, PreviousResult>([
+      [check.id, { status: "failed", checkedAt: since, failingSince: since }],
+    ]);
+    const [failedRow] = toEgressResultRows("exit-1", [failed], seen, now);
+    expect(failedRow).toMatchObject({
+      egressIpId: "exit-1",
+      checkId: check.id,
+      status: "failed",
+      failingSince: since,
+    });
+
+    const [okRow] = toEgressResultRows(
+      "exit-1",
+      [{ ...failed, status: "ok", detail: null }],
+      seen,
+      now,
+    );
+    expect(okRow?.failingSince).toBeNull();
+    expect(okRow?.egressIpId).toBe("exit-1");
   });
 });

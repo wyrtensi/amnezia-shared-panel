@@ -1,0 +1,189 @@
+#!/bin/sh
+# Atomically switch AWG3 egress mode between `masquerade` and `routed`.
+#   - Uses a lightweight 256 MiB free-disk gate (all images are local).
+#   - Writes a secret-free pre-switch snapshot (backups/egress-state-<ts>.json).
+#   - Achieves 0ms drop whenever amnezia-awg3 is already attached to br-awg-egress
+#     by toggling container MASQUERADE live alongside amnezia-egressd.
+#   - Recreates only awg3 and checks cotenants.sh when migrating off the legacy network.
+set -eu
+
+SCRIPT_DIR="$(CDPATH='' cd -- "$(dirname -- "$0")" && pwd)"
+# shellcheck source=common.sh
+. "$SCRIPT_DIR/common.sh"
+
+target_mode="${1:-}"
+case "$target_mode" in
+  masquerade|routed) ;;
+  *) fail "usage: $0 masquerade|routed" ;;
+esac
+
+if [ "$target_mode" = "routed" ]; then
+  command -v amnezia-egressd >/dev/null 2>&1 || fail "amnezia-egressd host binary is required for routed mode"
+  command -v nft >/dev/null 2>&1 || fail "nft is required for routed mode"
+fi
+
+available_kb="$(df -Pk "$NODE_DIR" | awk 'NR==2 { print $4 }')"
+min_kb="${PREFLIGHT_DISK_MIN_KB:-262144}"
+[ "$available_kb" -ge "$min_kb" ] || \
+  fail "at least $(( min_kb / 1024 )) MiB of free disk is required to switch egress mode (have $(( available_kb / 1024 )) MiB)"
+
+acquire_lock
+ensure_layout
+
+EGRESS_SOCKET="${NODE_EGRESS_SOCKET:-/run/amnezia-egress/egressd.sock}"
+EGRESS_MODE_FILE="$STATE_DIR_AWG3/egress-mode"
+
+write_egress_mode_file() {
+  mode_val="$1"
+  mkdir -p "$STATE_DIR_AWG3"
+  chmod 700 "$STATE_DIR_AWG3"
+  mode_tmp="$(mktemp "$STATE_DIR_AWG3/.egress-mode.XXXXXX")" || return 1
+  printf '%s\n' "$mode_val" >"$mode_tmp" || { rm -f "$mode_tmp"; return 1; }
+  chmod 600 "$mode_tmp"
+  mv -f "$mode_tmp" "$EGRESS_MODE_FILE"
+}
+
+had_previous_mode_file=0
+previous_mode=""
+if [ -f "$EGRESS_MODE_FILE" ] && [ ! -L "$EGRESS_MODE_FILE" ]; then
+  had_previous_mode_file=1
+  if [ -r "$EGRESS_MODE_FILE" ]; then
+    previous_mode="$(tr -d '[:space:]' <"$EGRESS_MODE_FILE" 2>/dev/null || true)"
+  fi
+fi
+case "$previous_mode" in
+  masquerade|routed) ;;
+  *) previous_mode="$(env_value AWG3_EGRESS_MODE)" ;;
+esac
+case "$previous_mode" in
+  masquerade|routed) ;;
+  *) previous_mode="masquerade" ;;
+esac
+
+ts="$(date -u '+%Y%m%dT%H%M%SZ')"
+snapshot_file="$BACKUP_DIR/egress-state-$ts.json"
+[ ! -e "$snapshot_file" ] || snapshot_file="$BACKUP_DIR/egress-state-$ts-$$.json"
+if [ -f "$EGRESS_STATE_FILE" ] && [ ! -L "$EGRESS_STATE_FILE" ]; then
+  cp "$EGRESS_STATE_FILE" "$snapshot_file"
+  chmod 600 "$snapshot_file"
+else
+  printf '{"schemaVersion":1,"previousMode":"%s","exits":[],"peers":[]}\n' "$previous_mode" >"$snapshot_file"
+  chmod 600 "$snapshot_file"
+fi
+
+cotenants_snap="${TMPDIR:-/tmp}/amnezia-switch-cotenants.$$"
+# shellcheck disable=SC2317
+cleanup_switch() {
+  rm -f "$cotenants_snap"
+  rmdir "$LOCK_DIR" 2>/dev/null || true
+}
+trap cleanup_switch EXIT INT TERM
+
+if [ -f "$SCRIPT_DIR/cotenants.sh" ]; then
+  sh "$SCRIPT_DIR/cotenants.sh" snapshot "$cotenants_snap"
+fi
+
+awg3_on_bridge=0
+if container_is_running amnezia-awg3; then
+  if docker inspect --format '{{range $k, $v := .NetworkSettings.Networks}}{{println $k}}{{end}}' amnezia-awg3 2>/dev/null | grep -q 'awg_egress$'; then
+    awg3_on_bridge=1
+  fi
+fi
+
+revert_on_error() {
+  reason="$1"
+  set_env_value AWG3_EGRESS_MODE "$previous_mode" || true
+  if [ "$had_previous_mode_file" -eq 1 ]; then
+    write_egress_mode_file "$previous_mode" || true
+  else
+    rm -f "$EGRESS_MODE_FILE" || true
+  fi
+  if [ "$previous_mode" = "routed" ]; then
+    amnezia-egressd reconcile --socket "$EGRESS_SOCKET" --node-dir "$NODE_DIR" --state "$EGRESS_STATE_FILE" >/dev/null 2>&1 || true
+  else
+    amnezia-egressd teardown --socket "$EGRESS_SOCKET" --node-dir "$NODE_DIR" --state "$EGRESS_STATE_FILE" >/dev/null 2>&1 || true
+  fi
+  if [ "$awg3_on_bridge" -eq 0 ]; then
+    compose up --detach --no-deps --no-build awg3 >/dev/null 2>&1 || true
+  elif container_is_running amnezia-awg3 && [ "$previous_mode" = "masquerade" ]; then
+    docker exec amnezia-awg3 /bin/sh -ec 'iptables -t nat -C POSTROUTING -s 10.90.0.0/22 -o eth0 -j MASQUERADE 2>/dev/null || iptables -t nat -A POSTROUTING -s 10.90.0.0/22 -o eth0 -j MASQUERADE' >/dev/null 2>&1 || true
+  fi
+  fail "$reason"
+}
+
+if ! set_env_value AWG3_EGRESS_MODE "$target_mode"; then
+  fail "failed to write AWG3_EGRESS_MODE=$target_mode to $ENV_FILE"
+fi
+if ! write_egress_mode_file "$target_mode"; then
+  set_env_value AWG3_EGRESS_MODE "$previous_mode" || true
+  fail "failed to write $EGRESS_MODE_FILE"
+fi
+
+if [ "$awg3_on_bridge" -eq 1 ]; then
+  live_awg3_ipv4="$(docker inspect --format '{{range $k, $v := .NetworkSettings.Networks}}{{println $k $v.IPAddress}}{{end}}' amnezia-awg3 2>/dev/null | awk '/(^|_)awg_egress / { print $2; exit }')"
+  if [ -n "$live_awg3_ipv4" ]; then
+    container_ipv4_tmp="$(mktemp "$STATE_DIR_AWG3/.container-ipv4.XXXXXX")"
+    printf '%s\n' "$live_awg3_ipv4" > "$container_ipv4_tmp"
+    chmod 600 "$container_ipv4_tmp"
+    mv -f "$container_ipv4_tmp" "$STATE_DIR_AWG3/container-ipv4"
+  fi
+  # 0ms live transition: container stays up on br-awg-egress while rules flip safely.
+  if [ "$target_mode" = "routed" ]; then
+    if ! amnezia-egressd reconcile --socket "$EGRESS_SOCKET" --node-dir "$NODE_DIR" --state "$EGRESS_STATE_FILE"; then
+      revert_on_error "amnezia-egressd reconcile failed before removing container MASQUERADE"
+    fi
+    if ! docker exec amnezia-awg3 /bin/sh -ec 'while iptables -t nat -D POSTROUTING -s 10.90.0.0/22 -o eth0 -j MASQUERADE 2>/dev/null; do :; done'; then
+      revert_on_error "failed to remove live container MASQUERADE rule in amnezia-awg3"
+    fi
+  else
+    if ! docker exec amnezia-awg3 /bin/sh -ec 'iptables -t nat -C POSTROUTING -s 10.90.0.0/22 -o eth0 -j MASQUERADE 2>/dev/null || iptables -t nat -A POSTROUTING -s 10.90.0.0/22 -o eth0 -j MASQUERADE'; then
+      revert_on_error "failed to restore live container MASQUERADE rule in amnezia-awg3"
+    fi
+    if command -v amnezia-egressd >/dev/null 2>&1; then
+      amnezia-egressd teardown --socket "$EGRESS_SOCKET" --node-dir "$NODE_DIR" --state "$EGRESS_STATE_FILE" || \
+        revert_on_error "amnezia-egressd teardown failed"
+    fi
+  fi
+else
+  # Legacy node migration: recreate only awg3 so it attaches to br-awg-egress.
+  if [ "$target_mode" = "routed" ]; then
+    if ! amnezia-egressd reconcile --socket "$EGRESS_SOCKET" --node-dir "$NODE_DIR" --state "$EGRESS_STATE_FILE"; then
+      revert_on_error "amnezia-egressd pre-reconcile failed before migrating awg3 onto br-awg-egress"
+    fi
+  fi
+  if ! compose up --detach --no-deps --no-build awg3; then
+    revert_on_error "failed to recreate awg3 on br-awg-egress"
+  fi
+  if ! wait_healthy amnezia-awg3; then
+    revert_on_error "amnezia-awg3 failed its health gate after switching to $target_mode"
+  fi
+  if [ "$target_mode" = "routed" ]; then
+    amnezia-egressd reconcile --socket "$EGRESS_SOCKET" --node-dir "$NODE_DIR" --state "$EGRESS_STATE_FILE" || \
+      revert_on_error "amnezia-egressd reconcile failed after migrating awg3"
+  elif command -v amnezia-egressd >/dev/null 2>&1; then
+    amnezia-egressd teardown --socket "$EGRESS_SOCKET" --node-dir "$NODE_DIR" --state "$EGRESS_STATE_FILE" || \
+      revert_on_error "amnezia-egressd teardown failed"
+  fi
+fi
+
+if [ -f "$cotenants_snap" ] && [ -f "$SCRIPT_DIR/cotenants.sh" ]; then
+  if ! sh "$SCRIPT_DIR/cotenants.sh" verify "$cotenants_snap"; then
+    revert_on_error "switching egress mode disturbed another tenant on this host"
+  fi
+fi
+
+if command -v conntrack >/dev/null 2>&1; then
+  conntrack -D -s 10.90.0.0/22 >/dev/null 2>&1 || true
+fi
+if container_is_running amnezia-awg3; then
+  awg3_pid="$(docker inspect --format '{{.State.Pid}}' amnezia-awg3 2>/dev/null || true)"
+  if [ -n "$awg3_pid" ] && [ "$awg3_pid" != "0" ] && command -v nsenter >/dev/null 2>&1 && command -v conntrack >/dev/null 2>&1; then
+    nsenter -t "$awg3_pid" -n conntrack -D -s 10.90.0.0/22 >/dev/null 2>&1 || true
+  fi
+  docker exec amnezia-awg3 /bin/sh -c 'command -v conntrack >/dev/null 2>&1 && conntrack -D -s 10.90.0.0/22 >/dev/null 2>&1 || true' >/dev/null 2>&1 || true
+fi
+
+prune_node_backups
+rm -f "$cotenants_snap"
+release_lock
+info "Egress mode switched to $target_mode (snapshot: $snapshot_file)."

@@ -344,10 +344,17 @@ containers but leaves volumes intact.
 **Scripts** (operator/updater-run):
 
 ```bash
-scripts/backup-db.sh [dir]          # gzipped pg_dump into ./backups (git-ignored)
-scripts/restore-db.sh <dump.sql.gz> # restore a dump
+scripts/backup-db.sh [dir]          # gzipped pg_dump into ./backups (git-ignored, keeps 14 by default)
+scripts/restore-db.sh <dump.sql.gz> # stop writers, restore dump, restart writers
 scripts/deploy.sh [--build]         # backup → pull/build → migrate → up (safe)
 ```
+
+Both `backup-db.sh` and `restore-db.sh` include `compose.override.yaml` when
+present. `backup-db.sh` prunes old dumps beyond `BACKUP_KEEP_COUNT` (default
+`14`, set `0` to disable pruning). `restore-db.sh` stops `control-api` and
+`worker` for the `psql` run with an `EXIT` trap so both restart even on error;
+if a node's host egress mode drifted since the backup, reconcile with
+`amnezia-panel node-reconcile <id>` and `amnezia-panel node-egress-adopt <id>`.
 
 `scripts/deploy.sh` **backs up the DB before every update** and refuses any
 destructive flag (`down`, `-v`, `--volumes`, `prune`). For the VPN node, snapshot

@@ -33,6 +33,10 @@ export type ServiceCheckResultRow = {
   failingSince: Date | null;
 };
 
+export type EgressServiceCheckResultRow = Omit<ServiceCheckResultRow, "nodeId"> & {
+  egressIpId: string;
+};
+
 /** Which checks this node takes part in at all. */
 export type NodeCheckPolicy = {
   checksEnabled: boolean;
@@ -140,29 +144,48 @@ const truncate = (value: string | null | undefined, max: number): string | null 
  * reach the service at all is still inside the same outage — and clears only on
  * a recovery.
  */
+const mapCheckResultRow = (
+  result: NodeCheckResult,
+  previousByCheckId: ReadonlyMap<string, PreviousResult>,
+  now: Date,
+): Omit<ServiceCheckResultRow, "nodeId"> => {
+  const previous = previousByCheckId.get(result.id);
+  const wasBroken = previous !== undefined && previous.status !== "ok";
+  return {
+    checkId: result.id,
+    status: result.status,
+    httpStatus: result.httpStatus ?? null,
+    latencyMs: result.latencyMs,
+    detail: truncate(result.detail, MAX_DETAIL),
+    finalUrl: truncate(result.finalUrl, MAX_FINAL_URL),
+    checkedAt: now,
+    failingSince:
+      result.status === "ok"
+        ? null
+        : wasBroken
+          ? (previous.failingSince ?? previous.checkedAt)
+          : now,
+  };
+};
+
 export const toResultRows = (
   nodeId: string,
   results: readonly NodeCheckResult[],
   previousByCheckId: ReadonlyMap<string, PreviousResult>,
   now: Date,
 ): ServiceCheckResultRow[] =>
-  results.map((result) => {
-    const previous = previousByCheckId.get(result.id);
-    const wasBroken = previous !== undefined && previous.status !== "ok";
-    return {
-      nodeId,
-      checkId: result.id,
-      status: result.status,
-      httpStatus: result.httpStatus ?? null,
-      latencyMs: result.latencyMs,
-      detail: truncate(result.detail, MAX_DETAIL),
-      finalUrl: truncate(result.finalUrl, MAX_FINAL_URL),
-      checkedAt: now,
-      failingSince:
-        result.status === "ok"
-          ? null
-          : wasBroken
-            ? (previous.failingSince ?? previous.checkedAt)
-            : now,
-    };
-  });
+  results.map((result) => ({
+    nodeId,
+    ...mapCheckResultRow(result, previousByCheckId, now),
+  }));
+
+export const toEgressResultRows = (
+  egressIpId: string,
+  results: readonly NodeCheckResult[],
+  previousByCheckId: ReadonlyMap<string, PreviousResult>,
+  now: Date,
+): EgressServiceCheckResultRow[] =>
+  results.map((result) => ({
+    egressIpId,
+    ...mapCheckResultRow(result, previousByCheckId, now),
+  }));

@@ -1,13 +1,16 @@
 import { createDatabase, type EncryptionKeyring } from "@amnezia/db";
 import { buildApp, type IdentityAdapter } from "./app.js";
 import { resolveBridgeConfig } from "./bridgeConfig.js";
-import { createCloudflareAccessAdapter } from "./cloudflareAccess.js";
+import {
+  createCloudflareAccessAdapter,
+} from "./cloudflareAccess.js";
 import {
   chainIdentityAdapters,
   createPanelSessionAdapter,
 } from "./panelSession.js";
 import { createDefaultControlApiService } from "./defaultService.js";
 import { PostgresControlRepository } from "./postgresRepository.js";
+import { createWytunnelReleaseResolver } from "./wytunnelReleases.js";
 
 const requiredEnv = (name: string): string => {
   const value = process.env[name];
@@ -77,6 +80,11 @@ export const startServer = async () => {
   // surfacing on the first bridge request. `jobsEnabled` gates bridge job
   // queuing (assertBridgeJobsEnabled), such as probe candidate checks.
   const bridgeConfig = resolveBridgeConfig(process.env);
+  const wytunnelReleaseResolver = createWytunnelReleaseResolver({
+    repository: bridgeConfig.wytunnelReleaseRepo,
+    pinnedVersion: bridgeConfig.wytunnelReleaseVersion,
+    githubToken: process.env.GITHUB_TOKEN,
+  });
   const repository = new PostgresControlRepository({
     db: database.db,
     keyring,
@@ -87,6 +95,7 @@ export const startServer = async () => {
     bridgeJobsEnabled: bridgeConfig.jobsEnabled,
     bridgeManagementHosts: bridgeConfig.managementHosts,
     bridgeAgentImageRepository: bridgeConfig.agentImageRepository,
+    wytunnelRelease: () => wytunnelReleaseResolver.get(),
   });
   const service = createDefaultControlApiService({ repository, keyring });
   // Identity methods, tried in order: Cloudflare Access JWT (edge login) then the
@@ -126,6 +135,7 @@ export const startServer = async () => {
     identityAdapter,
     logger: true,
     allowDevIdentity,
+    wytunnelReleaseResolver,
   });
 
   app.addHook("onClose", async () => {

@@ -5,6 +5,7 @@ import { ChevronDown, ChevronUp, GripVertical } from "lucide-react";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { Checkbox } from "@/components/ui/checkbox";
+import { formatEntryExit } from "@/lib/egress-api";
 import { useT } from "@/lib/i18n/provider";
 import {
   materializeNodeOrder,
@@ -42,6 +43,7 @@ export function NodeOrderList({
     id: string;
     name: string;
     address?: string | null;
+    egressIpv4?: string | null;
     enabled?: boolean;
   }>;
   order: string[];
@@ -153,9 +155,9 @@ export function NodeOrderList({
                 />
                 <div className="flex min-w-0 flex-1 flex-wrap items-baseline gap-x-2 gap-y-0.5">
                   <span className="truncate font-medium">{node.name}</span>
-                  {node.address ? (
+                  {formatEntryExit(node.address, node.egressIpv4) ? (
                     <code className="break-all font-mono text-xs text-muted-foreground">
-                      {node.address}
+                      {formatEntryExit(node.address, node.egressIpv4)}
                     </code>
                   ) : null}
                   {node.enabled === false ? (

@@ -1,7 +1,9 @@
 import type {
   InstallGuideVideos,
   KeyBridgeInfo,
+  KeyEgressInfo,
   KeyNameDisplay,
+  KeyServerUpdateNotice,
   UserNodeEndpoint,
   UserNodeReachability,
 } from "@amnezia/contracts";
@@ -103,6 +105,20 @@ export type AdminServiceCheck = {
     nodeName: string;
     // ok / failed / error, and the three stay distinct here: an admin needs to
     // know the node could not look, which the user surface collapses.
+    status: "ok" | "failed" | "error";
+    httpStatus: number | null;
+    latencyMs: number | null;
+    detail: string | null;
+    finalUrl: string | null;
+    checkedAt: string;
+    failingSince: string | null;
+  }>;
+  egressResults?: Array<{
+    egressIpId: string;
+    egressIpv4: string;
+    egressLabel: string | null;
+    nodeId: string;
+    nodeName: string;
     status: "ok" | "failed" | "error";
     httpStatus: number | null;
     latencyMs: number | null;
@@ -217,6 +233,7 @@ export type KeyTraffic = { receivedBytes: string; sentBytes: string };
 export type KeyView = {
   id: string;
   nodeId: string;
+  endpointId?: string | null;
   /**
    * The server's user-facing name, sent with the key. Not looked up in
    * `/api/nodes`: that list holds only the servers the user may create keys
@@ -242,6 +259,8 @@ export type KeyView = {
   internalName?: string | null;
   /** Admin-only bridge routing summary; absent for regular users. */
   bridge?: KeyBridgeInfo;
+  /** Admin-only egress routing summary; absent for regular users. */
+  egress?: KeyEgressInfo;
   // Which parts the client-visible connection name is composed of. Always
   // present -- the server attaches it to every key, never just some -- so
   // `composeKeyDisplayName` can reproduce the same name a rename would
@@ -250,6 +269,7 @@ export type KeyView = {
   routeProfile: string;
   rulesOutdated?: boolean;
   rulesUpdate?: KeyRulesUpdate;
+  serverUpdate?: KeyServerUpdateNotice;
   createdAt: string;
   lastUsedAt?: string | null;
   traffic?: KeyTraffic;

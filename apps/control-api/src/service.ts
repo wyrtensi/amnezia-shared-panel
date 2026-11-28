@@ -10,11 +10,13 @@ import type {
   RequestBridgeAgentUpdateResult,
   InfrastructureItem,
   BridgeEligibility,
+  NodeBridgeRoute,
   NodeBridgeRoutes,
   PrepareBridgeRouteRequest,
   PrepareBridgeRouteResult,
   ReleaseBridgeRouteResult,
   UpdateBridgeRequest,
+  UpdateBridgeRouteTransportRequest,
   VerifyBridgeRouteRequest,
   VerifyBridgeRouteResult,
   ConfigRefreshResult,
@@ -30,9 +32,18 @@ import type {
   DeleteNodeOptions,
   DeviceType,
   KeyBridgeInfo,
+  KeyEgressInfo,
   KeyNameDisplay,
   KeyRulesUpdate,
+  KeyServerUpdateNotice,
   KeyState,
+  AdminReassignKeyEndpointRequest,
+  CreateNodeEgressIpRequest,
+  NodeEgressIp,
+  NodeEgressMode,
+  NodeEgressModeState,
+  NotifyKeyUpdateRequest,
+  NotifyKeyUpdateResult,
   NoticeAcks,
   NoticeKind,
   ProtocolKind,
@@ -41,11 +52,16 @@ import type {
   Role,
   RouteProfile,
   RulesRefreshStatus,
+  SwapNodeEgressIpRequest,
+  UpdateNodeEgressIpRequest,
+  UpdateNodeEgressModeRequest,
   UserStatus,
   UpdateNodeRequest,
   UpdateNodeIpv6RejectStubRequest,
   UpdateServiceCheckRequest,
   UpsertReachabilityProbeRequest,
+  VerifyNodeEgressIpRequest,
+  VerifyNodeEgressIpResult,
 } from "@amnezia/contracts";
 import type { NodeTrafficPeriods } from "./repository.js";
 
@@ -67,6 +83,7 @@ export type KeyView = {
   id: string;
   ownerId: string;
   nodeId: string;
+  endpointId?: string | null;
   /**
    * The server's user-facing name. Present even when the user may no longer
    * create keys on that server, which `/api/nodes` does not list.
@@ -98,12 +115,15 @@ export type KeyView = {
    * leaves the server to non-admins.
    */
   bridge?: KeyBridgeInfo;
+  /** Admin-only exit IP / per-exit DNS summary; omitted for regular users. */
+  egress?: KeyEgressInfo;
   // Which parts the client-visible connection name is composed of. Feed it to
   // `composeKeyDisplayName` together with the node's public name.
   nameDisplay: KeyNameDisplay;
   routeProfile: RouteProfile;
   rulesOutdated?: boolean;
   rulesUpdate?: KeyRulesUpdate;
+  serverUpdate?: KeyServerUpdateNotice;
   createdAt: string;
   lastUsedAt?: string | null;
   traffic?: { receivedBytes: string; sentBytes: string };
@@ -372,6 +392,12 @@ export interface ControlApiService {
     actor: Actor,
     routeId: string,
   ) => Promise<ReleaseBridgeRouteResult>;
+  /** Update transport (`frp_tcp` / `wytunnel`) and WyTunnel pool/rotation settings for a route. */
+  updateBridgeRouteTransport: (
+    actor: Actor,
+    routeId: string,
+    request: UpdateBridgeRouteTransportRequest,
+  ) => Promise<NodeBridgeRoute>;
   /** VPN nodes and bridges as one typed `kind` union. */
   listInfrastructure: (actor: Actor) => Promise<InfrastructureItem[]>;
   /**
@@ -391,6 +417,80 @@ export interface ControlApiService {
     routeId: string,
     request: VerifyBridgeRouteRequest,
   ) => Promise<VerifyBridgeRouteResult>;
+  listNodeEgressIps: (actor: Actor, nodeId: string) => Promise<NodeEgressIp[]>;
+  createNodeEgressIp: (
+    actor: Actor,
+    nodeId: string,
+    request: CreateNodeEgressIpRequest,
+  ) => Promise<NodeEgressIp>;
+  updateNodeEgressIp: (
+    actor: Actor,
+    nodeId: string,
+    ipId: string,
+    request: UpdateNodeEgressIpRequest,
+  ) => Promise<NodeEgressIp>;
+  deleteNodeEgressIp: (
+    actor: Actor,
+    nodeId: string,
+    ipId: string,
+  ) => Promise<{ id: string; deleted: boolean; affectedEndpoints: number }>;
+  swapNodeEgressIp: (
+    actor: Actor,
+    nodeId: string,
+    ipId: string,
+    request: SwapNodeEgressIpRequest,
+  ) => Promise<{ ip: NodeEgressIp; replacedIpv4: string; affectedEndpoints: number }>;
+  verifyNodeEgressIp: (
+    actor: Actor,
+    nodeId: string,
+    ipId: string,
+    request: VerifyNodeEgressIpRequest,
+  ) => Promise<VerifyNodeEgressIpResult>;
+  setNodeEgressMode: (
+    actor: Actor,
+    nodeId: string,
+    request: UpdateNodeEgressModeRequest,
+  ) => Promise<{ nodeId: string; mode: NodeEgressMode; state: NodeEgressModeState; queued: boolean }>;
+  adoptNodeEgressMode: (
+    actor: Actor,
+    nodeId: string,
+  ) => Promise<{ nodeId: string; mode: NodeEgressMode; state: NodeEgressModeState }>;
+  reassignKeyEndpoint: (
+    actor: Actor,
+    keyId: string,
+    request: AdminReassignKeyEndpointRequest,
+  ) => Promise<{ id: string; nodeId: string; endpointId: string; previousEndpointId: string | null }>;
+  notifyNodeKeyUpdate: (
+    actor: Actor,
+    nodeId: string,
+    request: NotifyKeyUpdateRequest,
+  ) => Promise<NotifyKeyUpdateResult>;
+  clearNodeKeyUpdate: (
+    actor: Actor,
+    nodeId: string,
+  ) => Promise<NotifyKeyUpdateResult>;
+  notifyNodeEgressIpKeyUpdate: (
+    actor: Actor,
+    nodeId: string,
+    ipId: string,
+    request: NotifyKeyUpdateRequest,
+  ) => Promise<NotifyKeyUpdateResult>;
+  clearNodeEgressIpKeyUpdate: (
+    actor: Actor,
+    nodeId: string,
+    ipId: string,
+  ) => Promise<NotifyKeyUpdateResult>;
+  notifyNodeEndpointKeyUpdate: (
+    actor: Actor,
+    nodeId: string,
+    endpointId: string,
+    request: NotifyKeyUpdateRequest,
+  ) => Promise<NotifyKeyUpdateResult>;
+  clearNodeEndpointKeyUpdate: (
+    actor: Actor,
+    nodeId: string,
+    endpointId: string,
+  ) => Promise<NotifyKeyUpdateResult>;
 }
 
 export type BridgeTestConfigResult = {

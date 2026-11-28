@@ -117,4 +117,45 @@ describe("policy-endpoints", () => {
       recommendedNodeIds: ["node-a", "node-b"],
     });
   });
+
+  it("propagates effectiveEgressIp onto PolicyTarget entries", () => {
+    const endpointWithExit = {
+      ...ep("ep-exit", 1, "Amsterdam v1", "192.0.2.10"),
+      effectiveEgressIp: "198.51.100.20",
+    };
+    const routedFallback = {
+      ...makeNode("node-routed", "Routed Fallback", []),
+      egressMode: "routed" as const,
+      egressDefaultIpId: "exit-1",
+      egressIps: [
+        {
+          id: "exit-1",
+          nodeId: "node-routed",
+          ipv4: "198.51.100.30",
+          label: null,
+          interfaceName: "eth0",
+          gatewayIpv4: null,
+          routingTableId: 200,
+          dnsPrimary: "1.1.1.1",
+          dnsSecondary: null,
+          amneziaDnsDnat: true,
+          enforceDnsDnat: false,
+          allowAsEntry: false,
+          enabled: true,
+          hostState: "active" as const,
+          hostDetail: null,
+          observedSubnetCidr: null,
+          detectedGatewayIpv4: null,
+          txBytes: "0",
+          txPackets: "0",
+          hostObservedAt: null,
+        },
+      ],
+    };
+    const targets = expandPolicyTargets([
+      makeNode("node-ep", "Node EP", [endpointWithExit]),
+      routedFallback,
+    ]);
+    expect(targets.map((t) => t.egressIpv4)).toEqual(["198.51.100.20", "198.51.100.30"]);
+  });
 });

@@ -631,9 +631,9 @@ export function EmployeeDashboard({
                 </div>
               ) : null}
               <Button
-                variant="link"
+                variant="ghost"
                 size="sm"
-                className="shrink-0 px-0"
+                className="shrink-0 px-2 text-primary underline-offset-4 hover:underline"
                 onClick={() => setShowQuota(true)}
               >
                 {t("emp.requestMore")}
@@ -690,7 +690,13 @@ export function EmployeeDashboard({
                                 month={traffic?.month}
                               />
                             ) : null}
-                            <ServiceCheckChips checks={node.status?.checks} />
+                            {!showAddressList ? (
+                              <ServiceCheckChips
+                                checks={addresses[0]?.status?.checks ?? node.status?.checks}
+                              />
+                            ) : !addresses.some((item) => (item.status?.checks?.length ?? 0) > 0) ? (
+                              <ServiceCheckChips checks={node.status?.checks} />
+                            ) : null}
                           </div>
                           <div className="flex min-w-0 flex-wrap items-center gap-2.5">
                             <span className="tabular-nums text-xs text-muted-foreground">

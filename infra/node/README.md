@@ -103,9 +103,10 @@ compose file, cannot write `.env`, and has no compose binary — it cannot durab
 replace itself. `scripts/agent-update.sh` does the swap from the host instead, a
 port of the panel's own `infra/prod/panel-updater.sh`: the agent drops a request
 into a spool, `systemd/amnezia-node-agent-update.path` notices it, and the script
-pulls the requested digest, rewrites `NODE_AGENT_IMAGE` in `.env` and recreates
-**only** the agent (`--no-deps`), so no tunnel drops. A new agent that fails its
-health gate is rolled back to the previous digest.
+pulls the requested digest, updates/bootstraps the bundled host `amnezia-egressd`
+daemon + unit, rewrites `NODE_AGENT_IMAGE` in `.env`, and recreates
+**only** the agent (`--no-deps`), so no tunnel drops. If either the new agent or
+`amnezia-egressd` fails its health gate, both roll back to the previous release.
 
 The feature is off until a host is deliberately wired for it:
 
@@ -124,9 +125,11 @@ report the diff for a human to reconcile).
 
 ## State and recovery
 
-`backup.sh` stops the node-agent, AWG2, and AWG3 briefly so each `awg0.conf` and `clientsTable` cannot be captured across a mutation. It creates a mode-`0600` archive plus a SHA-256 sidecar in `backups/` covering `state/amnezia-awg2` and (once initialized) `state/amnezia-awg3`, then restarts only services that were previously running. The archive contains VPN private material; copy it only to approved encrypted backup storage.
+`backup.sh` stops the node-agent, AWG2, and AWG3 briefly so each `awg0.conf` and `clientsTable` cannot be captured across a mutation. It creates a mode-`0600` archive plus a SHA-256 sidecar in `backups/` covering `state/amnezia-awg2`, (once initialized) `state/amnezia-awg3` (including `egress-mode`, `container-ipv4`, and `ipv6-reject-stub.env`), and `egress-daemon` state (`/etc/amnezia-egress/state.json` / systemd unit when present), then restarts only services that were previously running. The archive contains VPN private material; copy it only to approved encrypted backup storage.
 
 `rollback.sh` accepts one explicit archive path. It rejects absolute/traversal archive members and links, validates the AWG2 config and `clientsTable` (and the AWG3 state when the archive contains it), takes a safety backup, restores with strict permissions, and requires all health checks. If restored state fails health verification, it puts the pre-rollback state back.
+
+Multi-exit routing (`routed` mode vs default `masquerade`) is optional: in `masquerade` (the default), `amnezia-awg3` performs ordinary single-IP container NAT and `amnezia-egressd` stays idle; in `routed`, host `amnezia-egressd` routes each peer across multiple Exit IPs using isolated Linux tables (`200..219`), per-peer `SNAT`, per-exit DNS DNAT, default-on SMTP port `25` blocking, and RFC1918 isolation (see [`docs/OPERATIONS.md`](../../docs/OPERATIONS.md#multi-exit-routing-egress-daemon)). The daemon (`services/egress-daemon`) is installed on the host via `scripts/install-egressd.sh` (or `scripts/install-host-services.sh` alongside the agent updater and capacity applier) and updated together with `node-agent` by `scripts/agent-update.sh`. To revert cleanly, switch back to `masquerade` with `bash scripts/switch-egress-mode.sh masquerade` and run `amnezia-egressd teardown` if removing the service.
 
 ## Security boundary
 

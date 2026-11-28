@@ -202,9 +202,28 @@ awg setconf awg0 "$RUNTIME_CONFIG_FILE"
 rm -f "$RUNTIME_CONFIG_FILE"
 ip -4 address add 10.90.0.1/22 dev awg0
 ip link set mtu "$IFACE_MTU" up dev awg0
+live_eth0_ipv4="$(ip -4 -o addr show dev eth0 2>/dev/null | awk '{split($4,a,"/"); print a[1]; exit}' || true)"
+if [ -n "$live_eth0_ipv4" ]; then
+  if ip_tmp="$(mktemp "$STATE_DIR/.container-ipv4.XXXXXX" 2>/dev/null)"; then
+    if ! { printf '%s\n' "$live_eth0_ipv4" >"$ip_tmp" && chmod 600 "$ip_tmp" && mv -f "$ip_tmp" "$STATE_DIR/container-ipv4"; }; then
+      rm -f "$ip_tmp"
+    fi
+  fi
+fi
 iptables -A FORWARD -i awg0 -j ACCEPT
 iptables -A FORWARD -o awg0 -m conntrack --ctstate RELATED,ESTABLISHED -j ACCEPT
-iptables -t nat -A POSTROUTING -s 10.90.0.0/22 -o eth0 -j MASQUERADE
+EGRESS_MODE="${AWG3_EGRESS_MODE:-masquerade}"
+if [ -r "$STATE_DIR/egress-mode" ]; then
+  persisted_mode="$(tr -d '[:space:]' <"$STATE_DIR/egress-mode" 2>/dev/null || true)"
+  case "$persisted_mode" in
+    routed|masquerade) EGRESS_MODE="$persisted_mode" ;;
+  esac
+fi
+if [ "$EGRESS_MODE" = "routed" ]; then
+  echo "AWG3 starting in routed egress mode (host amnezia-egressd owns SNAT on br-awg-egress)" >&2
+else
+  iptables -t nat -A POSTROUTING -s 10.90.0.0/22 -o eth0 -j MASQUERADE
+fi
 # Clients may run a larger tunnel MTU than awg0 (the panel sets the client
 # MTU per node, address, user or key). Clamping the MSS of forwarded TCP SYNs
 # to the path MTU keeps their TCP from stalling on the smaller interface.

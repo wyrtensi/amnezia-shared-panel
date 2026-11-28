@@ -1,4 +1,4 @@
-import { WORKER_PERIOD_FIELDS } from "@amnezia/contracts";
+import { WORKER_PERIOD_FIELDS, type NodeEgressMode } from "@amnezia/contracts";
 import type {
   NodeAgent,
   NodeAgentUpdateStatus,
@@ -12,7 +12,9 @@ import {
   checksForNode,
   selectDueChecks,
   toCheckRequests,
+  toEgressResultRows,
   toResultRows,
+  type EgressServiceCheckResultRow,
   type NodeServiceCheck,
   type PreviousResult,
   type ServiceCheckResultRow,
@@ -33,6 +35,10 @@ export const DEFAULT_PEER_SAMPLE_INTERVAL_MS =
 
 /** How many nodes the poll talks to at once. */
 const DEFAULT_POLL_CONCURRENCY = 4;
+/** Bounded parallel per-exit service checks per routed node. */
+const DEFAULT_EXIT_CHECK_CONCURRENCY = 3;
+/** Overall wall-clock budget for a node's per-exit service checks. */
+const DEFAULT_NODE_EXIT_CHECKS_BUDGET_MS = 25_000;
 
 export type PeerObservation = {
   keyId: string;
@@ -70,6 +76,9 @@ export type TelemetryNode = {
   /** Whether this node takes part in service checks, and which it skips. */
   checksEnabled: boolean;
   disabledCheckIds: string[];
+  /** Node egress mode and active Exit IPs for per-exit service checks. */
+  egressMode?: NodeEgressMode;
+  activeExitIps?: Array<{ id: string; ipv4: string }>;
 };
 
 export type NodeSnapshot = {
@@ -118,9 +127,13 @@ export interface TelemetryRepository {
   listServiceChecks?: () => Promise<{
     checks: NodeServiceCheck[];
     previousByNode: Map<string, Map<string, PreviousResult>>;
+    previousByEgressIp?: Map<string, Map<string, PreviousResult>>;
   }>;
   recordServiceCheckResults?: (
     rows: ServiceCheckResultRow[],
+  ) => Promise<void>;
+  recordEgressServiceCheckResults?: (
+    rows: EgressServiceCheckResultRow[],
   ) => Promise<void>;
 }
 
@@ -188,6 +201,10 @@ export type TelemetryPollerOptions = {
   now?: () => Date;
   /** Nodes contacted at once; bounded so a large fleet cannot exhaust the worker. */
   concurrency?: number;
+  /** Per-exit service checks run concurrently on a routed node. */
+  exitCheckConcurrency?: number;
+  /** Per-node overall time budget for per-exit service checks. */
+  exitChecksBudgetMs?: number;
 };
 
 /**
@@ -201,38 +218,95 @@ export type TelemetryPollerOptions = {
 const runNodeServiceChecks = async ({
   nodeId,
   policy,
+  egressMode,
+  activeExitIps,
   agent,
   serviceChecks,
   observedAt,
   repository,
+  exitCheckConcurrency,
+  exitChecksBudgetMs,
 }: {
   nodeId: string;
   policy: { checksEnabled: boolean; disabledCheckIds: string[] };
+  egressMode?: NodeEgressMode;
+  activeExitIps?: ReadonlyArray<{ id: string; ipv4: string }>;
   agent: { runChecks: NodeAgent["runChecks"] };
   serviceChecks: {
     checks: NodeServiceCheck[];
     previousByNode: Map<string, Map<string, PreviousResult>>;
+    previousByEgressIp?: Map<string, Map<string, PreviousResult>>;
   };
   observedAt: Date;
   repository: TelemetryRepository;
+  exitCheckConcurrency: number;
+  exitChecksBudgetMs: number;
 }): Promise<void> => {
+  const allowed = checksForNode(serviceChecks.checks, policy);
   const previous = serviceChecks.previousByNode.get(nodeId) ?? new Map();
-  const due = selectDueChecks(
-    checksForNode(serviceChecks.checks, policy),
-    previous,
-    observedAt,
-  );
-  if (due.length === 0) return;
-  try {
-    const results = await agent.runChecks(toCheckRequests(due));
-    // null means the agent predates the route. That is a fact about the node,
-    // not a result, and writing an `error` row for it would fast-retry every
-    // tick against an agent that will never answer until it is updated.
-    if (results === null) return;
-    const rows = toResultRows(nodeId, results, previous, observedAt);
-    if (rows.length > 0) await repository.recordServiceCheckResults?.(rows);
-  } catch {
-    // Deliberately silent: see the doc comment.
+  const due = selectDueChecks(allowed, previous, observedAt);
+  if (due.length > 0) {
+    try {
+      const results = await agent.runChecks(toCheckRequests(due));
+      // null means the agent predates the route. That is a fact about the node,
+      // not a result, and writing an `error` row for it would fast-retry every
+      // tick against an agent that will never answer until it is updated.
+      if (results !== null) {
+        const rows = toResultRows(nodeId, results, previous, observedAt);
+        if (rows.length > 0) await repository.recordServiceCheckResults?.(rows);
+      }
+    } catch {
+      // Deliberately silent: see the doc comment.
+    }
+  }
+  if (
+    egressMode === "routed" &&
+    activeExitIps &&
+    activeExitIps.length > 0 &&
+    repository.recordEgressServiceCheckResults
+  ) {
+    const dueExits = activeExitIps
+      .map((exit) => {
+        const exitPrev = serviceChecks.previousByEgressIp?.get(exit.id) ?? new Map();
+        const dueForExit = selectDueChecks(allowed, exitPrev, observedAt);
+        return dueForExit.length > 0 ? { exit, exitPrev, dueForExit } : null;
+      })
+      .filter((item): item is NonNullable<typeof item> => item !== null);
+    if (dueExits.length === 0) return;
+
+    const recordEgressResults = repository.recordEgressServiceCheckResults;
+    let budgetExhausted = false;
+    let timer: ReturnType<typeof setTimeout> | undefined;
+    const checksPromise = mapWithConcurrency(
+      dueExits,
+      exitCheckConcurrency,
+      async ({ exit, exitPrev, dueForExit }) => {
+        if (budgetExhausted) return;
+        try {
+          const exitResults = await agent.runChecks(toCheckRequests(dueForExit), {
+            egressIpv4: exit.ipv4,
+          });
+          if (exitResults === null || budgetExhausted) return;
+          const rows = toEgressResultRows(exit.id, exitResults, exitPrev, observedAt);
+          if (rows.length > 0) {
+            await recordEgressResults(rows);
+          }
+        } catch {
+          // Deliberately silent per exit IP so sibling exits and node telemetry stay healthy.
+        }
+      },
+    );
+    const budgetPromise = new Promise<void>((resolve) => {
+      timer = setTimeout(() => {
+        budgetExhausted = true;
+        resolve();
+      }, Math.max(1, exitChecksBudgetMs));
+    });
+    try {
+      await Promise.race([checksPromise, budgetPromise]);
+    } finally {
+      if (timer !== undefined) clearTimeout(timer);
+    }
   }
 };
 
@@ -242,6 +316,8 @@ export const createTelemetryPoller = ({
   resolvePublicIp = createPublicIpResolver(),
   now = () => new Date(),
   concurrency = DEFAULT_POLL_CONCURRENCY,
+  exitCheckConcurrency = DEFAULT_EXIT_CHECK_CONCURRENCY,
+  exitChecksBudgetMs = DEFAULT_NODE_EXIT_CHECKS_BUDGET_MS,
 }: TelemetryPollerOptions) => async (): Promise<void> => {
   const telemetryNodes = await repository.listTelemetryNodes();
   // Read before the fan-out, so every node in this tick is scheduled against
@@ -328,10 +404,14 @@ export const createTelemetryPoller = ({
               checksEnabled: node.checksEnabled,
               disabledCheckIds: node.disabledCheckIds,
             },
+            egressMode: node.egressMode,
+            activeExitIps: node.activeExitIps,
             agent,
             serviceChecks,
             observedAt,
             repository,
+            exitCheckConcurrency,
+            exitChecksBudgetMs,
           });
         }
       } catch (error) {

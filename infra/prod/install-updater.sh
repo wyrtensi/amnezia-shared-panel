@@ -70,13 +70,20 @@ chmod 0770 "$SPOOL_DIR"
 
 echo "==> Installing systemd units"
 mkdir -p "$UNIT_DIR"
+svc_tmp="$(mktemp "${UNIT_DIR}/.panel-updater.service.XXXXXX")"
 sed -e "s#/opt/amnezia-panel#${REPO_DIR}#g" \
     -e "s#/var/lib/amnezia-panel/update#${SPOOL_DIR}#g" \
     "${REPO_DIR}/infra/prod/panel-updater.service" \
-    >"${UNIT_DIR}/panel-updater.service"
+    >"$svc_tmp"
+chmod 0644 "$svc_tmp"
+mv -f "$svc_tmp" "${UNIT_DIR}/panel-updater.service"
+
+path_tmp="$(mktemp "${UNIT_DIR}/.panel-updater.path.XXXXXX")"
 sed -e "s#/var/lib/amnezia-panel/update#${SPOOL_DIR}#g" \
     "${REPO_DIR}/infra/prod/panel-updater.path" \
-    >"${UNIT_DIR}/panel-updater.path"
+    >"$path_tmp"
+chmod 0644 "$path_tmp"
+mv -f "$path_tmp" "${UNIT_DIR}/panel-updater.path"
 
 systemctl daemon-reload
 verify_effective_execstart panel-updater.service "$UPDATER_SCRIPT"

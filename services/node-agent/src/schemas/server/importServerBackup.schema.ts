@@ -1,4 +1,5 @@
 import { getServerSchema } from "./getServer.schema";
+import { desiredStateSchema } from "./egress.schema";
 import { SwaggerContract } from "@/contracts/swagger";
 import { Protocol, CustomFormat, AppFastifySchema } from "@/types/shared";
 
@@ -120,6 +121,17 @@ const xrayPayloadSchema = {
 export const importServerBackupSchema = {
   tags: [SwaggerContract.Tags.SERVER],
   summary: "Импорт резервной копии конфигурации сервера",
+  querystring: {
+    type: "object",
+    properties: {
+      skipEgress: {
+        type: "string",
+        enum: ["1", "0", "true", "false"],
+        description:
+          "Set to 1 or true to restore protocol configs while skipping amnezia-egressd state import.",
+      },
+    },
+  },
   body: {
     type: "object",
     required: ["generatedAt", "serverId", "protocols"],
@@ -155,6 +167,10 @@ export const importServerBackupSchema = {
       amneziaWg2: amneziaPayloadSchema,
       amneziaWg3: amneziaPayloadSchema,
       xray: xrayPayloadSchema,
+      egress: {
+        ...desiredStateSchema,
+        nullable: true,
+      },
     },
     allOf: [
       {
@@ -216,7 +232,23 @@ export const importServerBackupSchema = {
     ],
   },
   response: {
-    200: getServerSchema.response[200],
+    200: {
+      ...getServerSchema.response[200],
+      properties: {
+        ...getServerSchema.response[200].properties,
+        egressReconcileRequired: {
+          type: "boolean",
+          description:
+            "True when a legacy backup (without egress state) was imported onto a routed-mode host.",
+        },
+        egressWarnings: {
+          type: "array",
+          items: { type: "string" },
+          description:
+            "Non-fatal warnings emitted while restoring host egress state (e.g. missing Exit IP on replacement host).",
+        },
+      },
+    },
     401: SwaggerContract.ClientErrorResponseFactory(401),
     403: SwaggerContract.ClientErrorResponseFactory(403),
   },

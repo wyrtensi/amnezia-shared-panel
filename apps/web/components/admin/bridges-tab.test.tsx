@@ -1,9 +1,11 @@
+import { readFileSync } from "node:fs";
+import { fileURLToPath } from "node:url";
 import { renderToStaticMarkup } from "react-dom/server";
 import { describe, expect, it } from "vitest";
 import type { Bridge, NodeBridgeRoute } from "@amnezia/contracts";
 import { messages, type Lang } from "@/lib/i18n/messages";
 import { formatDateTime } from "@/lib/format";
-import { BridgeCardView } from "./bridges-tab";
+import { BridgeCardView, BridgeDetailDialog } from "./bridges-tab";
 import { OverviewBridgesBlock } from "./overview-bridges";
 import { BridgeRouteFacts } from "./bridge-route-view";
 import { agentUpdateTone } from "@/lib/bridge-ui";
@@ -35,6 +37,7 @@ const bridge: Bridge = {
       nodeName: "Node A",
       publicUdpPort: 41000,
       state: "active",
+      transport: "frp_tcp",
       // The bridge is stale, so the API reads its routes as unknown.
       registration: { status: "unknown", marker: null, observedAt: "2026-11-13T09:00:00.000Z" },
       verification: { kind: "awg_path", status: "unknown", checkedAt: null },
@@ -45,6 +48,7 @@ const bridge: Bridge = {
       nodeName: "Node B",
       publicUdpPort: 41001,
       state: "draft",
+      transport: "frp_tcp",
       registration: { status: "unknown", marker: null, observedAt: null },
       verification: { kind: "candidate", status: "none", method: null, verifiedAt: null, error: null },
     },
@@ -255,6 +259,125 @@ describe("BridgeCardView", () => {
     expect(html).toContain("Маршрутов нет");
     expect(html).not.toContain("install-frps.sh");
   });
+
+  it("omits outer Card wrapper when embedded and handles BridgeDetailDialog null/open safely", () => {
+    const standalone = render(bridge);
+    expect(standalone).toContain("rounded-xl border bg-card");
+
+    const embeddedHtml = renderToStaticMarkup(
+      <BridgeCardView
+        bridge={bridge}
+        t={tFor("en")}
+        lang="en"
+        onRename={() => undefined}
+        onDelete={() => undefined}
+        embedded
+      />,
+    );
+    expect(embeddedHtml).not.toContain(`id="bridge-${bridge.id}"`);
+    expect(embeddedHtml).not.toContain('tabindex="-1"');
+    expect(embeddedHtml).toContain("Amsterdam bridge");
+    expect(embeddedHtml).toContain("7000/tcp");
+    expect(embeddedHtml).not.toContain("rounded-xl border bg-card");
+
+    const modalHtml = renderToStaticMarkup(
+      <BridgeCardView
+        bridge={bridge}
+        t={tFor("en")}
+        lang="en"
+        onRename={() => undefined}
+        onDelete={() => undefined}
+        onOpenNode={() => undefined}
+        embedded
+      />,
+    );
+    expect(modalHtml).not.toContain(`href="#node-${NODE}"`);
+    expect(modalHtml).toContain("<button");
+    expect(modalHtml).toContain("Node A");
+
+    const src = readFileSync(
+      fileURLToPath(new URL("./bridges-tab.tsx", import.meta.url)),
+      "utf8",
+    );
+    expect(src).toContain(
+      "const hasSubDialog = renaming || deleting || updating || Boolean(editingRouteTransport);",
+    );
+    expect(src).toContain("if (!next && !hasSubDialog) onClose();");
+    expect(src).toContain("onInteractOutside={(e) => {");
+    expect(src).toContain("onEscapeKeyDown={(e) => {");
+
+    const closedDialog = renderToStaticMarkup(
+      <BridgeDetailDialog
+        bridge={null}
+        onClose={() => undefined}
+        onDone={() => Promise.resolve()}
+        request={() => Promise.resolve({} as never)}
+      />,
+    );
+    expect(closedDialog).toBe("");
+
+    expect(() =>
+      renderToStaticMarkup(
+        <BridgeDetailDialog
+          bridge={bridge}
+          onClose={() => undefined}
+          onDone={() => Promise.resolve()}
+          request={() => Promise.resolve({} as never)}
+        />,
+      ),
+    ).not.toThrow();
+  });
+
+  it("renders WyTunnel pool telemetry and disabled frps badge without false FRP errors", () => {
+    const html = render({
+      ...bridge,
+      defaultTransport: "wytunnel",
+      frpsEnabled: false,
+      managementStatus: "ok",
+      management: {
+        apiUrl: "http://host.docker.internal:17600",
+        enrolled: true,
+        enrolledAt: "2026-11-13T08:00:00.000Z",
+        agentVersion: "0.2.0",
+        agentApiVersion: 1,
+        agentCapabilities: ["status.v1", "wytunnel.v1"],
+        frpsVersion: null,
+        frpsReachable: false,
+        lastErrorCode: null,
+        lastPollAttemptAt: "2026-11-13T10:00:00.000Z",
+      },
+      routes: [
+        {
+          ...bridge.routes[0]!,
+          transport: "wytunnel",
+          transportPort: 44300,
+          transportConfig: {
+            poolSize: 10,
+            poolRotateIntervalSec: 1800,
+            poolRotateDrainSec: 30,
+            keepaliveSec: 10,
+            fec: null,
+            handshakeMode: "none",
+            ebpfEnabled: false,
+          },
+          registration: { status: "online", marker: "wt-1", observedAt: "2026-11-13T10:00:00.000Z" },
+          telemetry: {
+            mode: "pool",
+            healthyStreams: 10,
+            targetStreams: 10,
+            poolRttMs: 24,
+            failoversTotal: 1,
+            rotationsTotal: 3,
+            activeSessions: 7,
+          },
+        },
+      ],
+    });
+    expect(html).toContain("WyTunnel");
+    expect(html).toContain("10/10");
+    expect(html).toContain("24 ms");
+    expect(html).toContain("frps");
+  });
 });
 
 describe("BridgeCardView agent update", () => {
@@ -434,6 +557,8 @@ describe("BridgeRouteFacts", () => {
     bridgeId: bridge.id,
     publicUdpPort: 41001,
     state: "draft",
+    transport: "frp_tcp",
+    transportPort: null,
     frpProxyName: "awg-route-x",
     observedOnline: true,
     observedRegistrationMarker: "marker-1",

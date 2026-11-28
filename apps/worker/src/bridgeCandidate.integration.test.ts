@@ -13,9 +13,11 @@ import {
   createDatabase,
   encryptSecret,
   jobOutbox,
+  nodeEgressIps,
   nodeReachabilityHistory,
   nodeReachabilityResults,
   nodeReachabilityState,
+  nodeVpnEndpoints,
   nodes,
   reachabilityProbe,
   users,
@@ -527,5 +529,40 @@ describe("bridge candidate check end to end (real PostgreSQL)", () => {
     expect(fresh).toBe(false);
     expect((await probeRow())?.candidateRunId).toBeNull();
     await db().update(reachabilityProbe).set({ currentRunId: null });
+  });
+
+  runDatabaseTest("resolves routed candidate expected egress from service key endpoint when default exit is unset", async () => {
+    const { nodeId, routeId } = await seedRoute();
+    await db()
+      .update(nodes)
+      .set({ egressMode: "routed", egressDefaultIpId: null, publicIp: "192.0.2.10" })
+      .where(eq(nodes.id, nodeId));
+    const [exitRow] = await db()
+      .insert(nodeEgressIps)
+      .values({
+        nodeId,
+        ipv4: "198.51.100.77",
+        label: "Exit 77",
+      })
+      .returning();
+    const [epRow] = await db()
+      .insert(nodeVpnEndpoints)
+      .values({
+        nodeId,
+        ordinal: 1,
+        address: "192.0.2.10",
+        entryName: "Entry",
+        variantOrdinal: 1,
+        name: "Entry",
+        egressIpId: exitRow!.id,
+      })
+      .returning();
+    await db()
+      .update(vpnKeys)
+      .set({ endpointId: epRow!.id })
+      .where(eq(vpnKeys.nodeId, nodeId));
+
+    const ctx = await candidates.loadCandidateContext(routeId);
+    expect(ctx?.nodePublicIp).toBe("198.51.100.77");
   });
 });

@@ -1,5 +1,6 @@
 import { Protocol } from "@/types/shared";
 import { ClientTableEntry } from "@/types/amnezia";
+import { DesiredState, HostNetworkReport } from "@/types/egress";
 
 export type AmneziaBackupData = {
   wgConfig: string;
@@ -93,6 +94,12 @@ export type ServerBackupPayload = {
   amneziaWg2?: AmneziaBackupData;
   amneziaWg3?: AmneziaBackupData;
   xray?: XrayBackupData;
+  egress?: DesiredState | null;
+};
+
+export type ImportBackupResult = {
+  egressReconcileRequired?: boolean;
+  egressWarnings?: string[];
 };
 
 /** Live and persisted status of the AWG 3.1 IPv6 active-reject stub. */
@@ -128,6 +135,8 @@ export type ServerStatusPayload = {
   // Status of the optional per-node AWG 3.1 IPv6 active-reject stub (`prohibit 2000::/3`).
   // Null when amneziawg3 is not enabled or unreachable on this node.
   ipv6RejectStub: Ipv6RejectStubStatus | null;
+  // Compact host egress report observed by amnezia-egressd (null when absent).
+  egressReport?: HostNetworkReport | null;
 };
 
 // The lifecycle of an in-panel agent update, derived from the spool rather than

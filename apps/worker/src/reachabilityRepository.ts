@@ -7,6 +7,8 @@ import {
   isIpLiteral,
   isIpv4Literal,
   isProbeStale,
+  NODE_SYNC_EGRESS_JOB_TYPE,
+  nodeRunsCheck,
   nodeServedProtocols,
   probeCapabilityInputOf,
   PROBE_STALE_GRACE_SEC,
@@ -32,9 +34,11 @@ import {
   deterministicPeerLabel,
   jobOutbox,
   keyOwnerIsPerson,
+  nodeEgressServiceCheckResults,
   nodeReachabilityHistory,
   nodeReachabilityResults,
   nodeReachabilityState,
+  nodeEgressIps,
   nodeVpnEndpoints,
   nodes,
   peerCurrent,
@@ -63,6 +67,11 @@ import {
   writeCandidateVerification,
 } from "./bridgeCandidateRepository.js";
 import { bridgeExternalVerdict, bridgeHostTargetId } from "./bridgeReachability.js";
+import {
+  formatEgressAutoRotateNotice,
+  selectAutoRotateExitIp,
+  shouldTriggerEgressAutoRotate,
+} from "./egressAutoRotate.js";
 import {
   alertClock,
   measuredViaBridge,
@@ -163,12 +172,16 @@ const projectServiceConfig = (
 const projectedTargetId = (targetId: string, projection: ClientProjection) =>
   projection.usesLegacyIdentity ? targetId : `${targetId}:c${projection.fingerprint}`;
 
-const toTargetAddress = (endpoint: PublicEndpoint): TargetAddress => ({
+const toTargetAddress = (
+  endpoint: PublicEndpoint,
+  expectedEgressIp: string | null = null,
+): TargetAddress => ({
   id: endpoint.id,
   ordinal: endpoint.ordinal,
   address: endpoint.address,
   name: endpoint.name,
   checkedAt: endpoint.probeCheckedAt,
+  expectedEgressIp,
 });
 
 const digest = (value: unknown): string =>
@@ -197,20 +210,29 @@ const directAddressTargets = (
       config = null;
     }
   }
-  const identity = digest([endpoint.id, endpoint.revision, endpoint.address, port, projection.fingerprint]);
+  const expectedEgressIp = isIpLiteral(base.expectedEgressIp ?? "") ? base.expectedEgressIp : null;
+  const identity = digest([
+    endpoint.id,
+    endpoint.revision,
+    endpoint.address,
+    port,
+    projection.fingerprint,
+    expectedEgressIp,
+  ]);
   return {
     ...base,
     targetId: `${reachabilityTargetId(base.nodeId, "awg3", base.endpointRevision)}:direct:${identity}`,
     config,
     unavailableReason: config === null ? CLIENT_UNRENDERABLE_REASON : null,
-    addresses: [toTargetAddress(endpoint)],
-    expectedEgressIp: isIpLiteral(base.expectedEgressIp ?? "") ? base.expectedEgressIp : null,
+    addresses: [toTargetAddress(endpoint, expectedEgressIp)],
+    expectedEgressIp,
   };
 });
 
 /**
- * Bridged addresses whose projected configs are identical share one target
- * rendered for the bridge; each distinct profile is a target of its own.
+ * Bridged addresses whose projected configs and expected egress IPs are
+ * identical share one target rendered for the bridge; each distinct pair is a
+ * target of its own.
  */
 const bridgedAddressTargets = (
   base: RunTarget,
@@ -218,10 +240,11 @@ const bridgedAddressTargets = (
   via: NonNullable<RunTarget["bridgePath"]>,
   project: ReturnType<typeof projectServiceConfig>,
 ): RunTarget[] => {
+  const expectedEgressIp = isIpLiteral(base.expectedEgressIp ?? "") ? base.expectedEgressIp : null;
   const groups = new Map<string, { projection: ClientProjection; endpoints: PublicEndpoint[] }>();
   for (const endpoint of endpoints) {
     const projection = project(endpoint);
-    const profile = projection.config ?? projection.fingerprint;
+    const profile = `${projection.config ?? projection.fingerprint}::${expectedEgressIp ?? ""}`;
     const group = groups.get(profile);
     if (group) group.endpoints.push(endpoint);
     else groups.set(profile, { projection, endpoints: [endpoint] });
@@ -240,6 +263,7 @@ const bridgedAddressTargets = (
     const identity = digest([
       projection.fingerprint,
       [via.bridgeId, via.host, via.port],
+      expectedEgressIp,
       members.map(({ id, revision }) => [id, revision]),
     ]);
     return {
@@ -247,7 +271,8 @@ const bridgedAddressTargets = (
       targetId: `${reachabilityTargetId(base.nodeId, "awg3", base.endpointRevision)}:bridge:${identity}`,
       config,
       unavailableReason: reason,
-      addresses: members.map(toTargetAddress),
+      addresses: members.map((endpoint) => toTargetAddress(endpoint, expectedEgressIp)),
+      expectedEgressIp,
     };
   });
 };
@@ -554,8 +579,239 @@ export class PostgresReachabilityRepository
             probeAlertedAt: outcome.state.alertedAt,
             probeAlertKind: outcome.state.alertKind,
             probeDetail: outcome.detail,
+            probeObservedEgressIp: outcome.observedEgressIp ?? null,
+            probeEgressMatch: outcome.egressMatch ?? null,
           })
           .where(eq(nodeVpnEndpoints.id, outcome.endpointId));
+      }
+
+      const rotationNotices: Notice[] = [];
+      const rotatedNodeIds = new Set<string>();
+      const outcomeByEndpointId = new Map(
+        write.addressOutcomes.map((outcome) => [outcome.endpointId, outcome]),
+      );
+      const addressRowById = new Map(addressRows.map((row) => [row.id, row]));
+      const candidateEndpointIds = write.mass
+        ? []
+        : addressRows
+            .filter((row) => {
+              if (!row.enabled || !row.egressAutoRotateEnabled) return false;
+              const outcome = outcomeByEndpointId.get(row.id);
+              return (
+                outcome?.status === "failed" && outcome.state.alertedAt !== null
+              );
+            })
+            .sort((a, b) => a.ordinal - b.ordinal)
+            .map((row) => row.id);
+
+      if (candidateEndpointIds.length > 0) {
+        const affectedNodeIds = [
+          ...new Set(
+            candidateEndpointIds
+              .map((id) => addressRowById.get(id)?.nodeId)
+              .filter((id): id is string => Boolean(id)),
+          ),
+        ];
+        const [affectedNodes, allNodeEndpoints, allNodeExits, failingCheckRows] =
+          await Promise.all([
+            tx
+              .select({
+                id: nodes.id,
+                name: nodes.name,
+                egressMode: nodes.egressMode,
+                egressDefaultIpId: nodes.egressDefaultIpId,
+                checksEnabled: nodes.checksEnabled,
+                disabledCheckIds: nodes.disabledCheckIds,
+              })
+              .from(nodes)
+              .where(inArray(nodes.id, affectedNodeIds)),
+            tx
+              .select({
+                id: nodeVpnEndpoints.id,
+                nodeId: nodeVpnEndpoints.nodeId,
+                ordinal: nodeVpnEndpoints.ordinal,
+                name: nodeVpnEndpoints.name,
+                address: nodeVpnEndpoints.address,
+                egressIpId: nodeVpnEndpoints.egressIpId,
+                enabled: nodeVpnEndpoints.enabled,
+                egressAutoRotateEnabled: nodeVpnEndpoints.egressAutoRotateEnabled,
+                egressAutoRotatePoolIds: nodeVpnEndpoints.egressAutoRotatePoolIds,
+                egressAutoRotatedAt: nodeVpnEndpoints.egressAutoRotatedAt,
+                probeStatus: nodeVpnEndpoints.probeStatus,
+                probeAlertedAt: nodeVpnEndpoints.probeAlertedAt,
+              })
+              .from(nodeVpnEndpoints)
+              .where(inArray(nodeVpnEndpoints.nodeId, affectedNodeIds)),
+            tx
+              .select({
+                id: nodeEgressIps.id,
+                nodeId: nodeEgressIps.nodeId,
+                ipv4: nodeEgressIps.ipv4,
+                label: nodeEgressIps.label,
+                enabled: nodeEgressIps.enabled,
+                hostState: nodeEgressIps.hostState,
+              })
+              .from(nodeEgressIps)
+              .where(inArray(nodeEgressIps.nodeId, affectedNodeIds))
+              .orderBy(asc(nodeEgressIps.routingTableId), asc(nodeEgressIps.ipv4)),
+            tx
+              .select({
+                nodeId: nodeEgressIps.nodeId,
+                egressIpId: nodeEgressServiceCheckResults.egressIpId,
+                checkId: nodeEgressServiceCheckResults.checkId,
+              })
+              .from(nodeEgressServiceCheckResults)
+              .innerJoin(
+                nodeEgressIps,
+                eq(nodeEgressIps.id, nodeEgressServiceCheckResults.egressIpId),
+              )
+              .where(
+                and(
+                  inArray(nodeEgressIps.nodeId, affectedNodeIds),
+                  eq(nodeEgressServiceCheckResults.status, "failed"),
+                ),
+              ),
+          ]);
+
+        const affectedNodeById = new Map(affectedNodes.map((n) => [n.id, n]));
+        const exitsByNode = new Map<string, typeof allNodeExits>();
+        for (const exitRow of allNodeExits) {
+          const list = exitsByNode.get(exitRow.nodeId) ?? [];
+          list.push(exitRow);
+          exitsByNode.set(exitRow.nodeId, list);
+        }
+
+        const failingCheckExitsByNode = new Map<string, Set<string>>();
+        for (const checkRow of failingCheckRows) {
+          const node = affectedNodeById.get(checkRow.nodeId);
+          if (!node || !nodeRunsCheck(node, checkRow.checkId)) continue;
+          const set = failingCheckExitsByNode.get(checkRow.nodeId) ?? new Set<string>();
+          set.add(checkRow.egressIpId);
+          failingCheckExitsByNode.set(checkRow.nodeId, set);
+        }
+
+        const siblingExitByGroup = new Map<string, Map<string, string | null>>();
+        const unhealthyExitsByNode = new Map<string, Set<string>>();
+        for (const ep of allNodeEndpoints) {
+          const groupKey = `${ep.nodeId}:${ep.address}`;
+          const group = siblingExitByGroup.get(groupKey) ?? new Map<string, string | null>();
+          group.set(ep.id, ep.egressIpId ?? null);
+          siblingExitByGroup.set(groupKey, group);
+
+          const node = affectedNodeById.get(ep.nodeId);
+          const epOutcome = outcomeByEndpointId.get(ep.id);
+          const isUnhealthy =
+            epOutcome?.status === "failed" ||
+            (!epOutcome && ep.probeStatus === "failed" && ep.probeAlertedAt !== null);
+          if (isUnhealthy && node) {
+            const effectiveExitId = ep.egressIpId ?? node.egressDefaultIpId ?? null;
+            if (effectiveExitId) {
+              const set = unhealthyExitsByNode.get(ep.nodeId) ?? new Set<string>();
+              set.add(effectiveExitId);
+              unhealthyExitsByNode.set(ep.nodeId, set);
+            }
+          }
+        }
+
+        for (const epId of candidateEndpointIds) {
+          const ep = addressRowById.get(epId);
+          const outcome = outcomeByEndpointId.get(epId);
+          if (!ep || !outcome) continue;
+          const node = affectedNodeById.get(ep.nodeId);
+          if (!node) continue;
+          if (
+            !shouldTriggerEgressAutoRotate({
+              massFailure: write.mass,
+              nodeEgressMode: node.egressMode,
+              endpoint: ep,
+              outcome,
+              failThreshold: claimed.failThreshold,
+              now: run.now,
+            })
+          ) {
+            continue;
+          }
+
+          const groupKey = `${ep.nodeId}:${ep.address}`;
+          const siblingMap = siblingExitByGroup.get(groupKey) ?? new Map<string, string | null>();
+          const occupiedSiblingExitIds = new Set<string>();
+          for (const [sibId, exitId] of siblingMap) {
+            if (sibId !== ep.id && exitId) occupiedSiblingExitIds.add(exitId);
+          }
+
+          const selection = selectAutoRotateExitIp({
+            endpoint: {
+              id: ep.id,
+              address: ep.address,
+              egressIpId: ep.egressIpId ?? null,
+              egressAutoRotatePoolIds: ep.egressAutoRotatePoolIds ?? [],
+            },
+            nodeEgressDefaultIpId: node.egressDefaultIpId ?? null,
+            nodeExits: exitsByNode.get(ep.nodeId) ?? [],
+            occupiedSiblingExitIds,
+            failingExitCheckIds: failingCheckExitsByNode.get(ep.nodeId) ?? new Set<string>(),
+            unhealthyEndpointExitIds: unhealthyExitsByNode.get(ep.nodeId) ?? new Set<string>(),
+          });
+          if (!selection) continue;
+
+          siblingMap.set(ep.id, selection.nextExit.id);
+          await tx
+            .update(nodeVpnEndpoints)
+            .set({
+              egressIpId: selection.nextExit.id,
+              egressAutoRotatedAt: run.now,
+              revision: sql`${nodeVpnEndpoints.revision} + 1`,
+              probeStatus: null,
+              probeLevels: null,
+              probeCheckedAt: null,
+              probeConsecutiveFailures: 0,
+              probeFailingSince: null,
+              probeObservedEgressIp: null,
+              probeEgressMatch: null,
+              probeDetail: "auto-rotated exit IP; waiting for measurement",
+            })
+            .where(eq(nodeVpnEndpoints.id, ep.id));
+          await tx.insert(auditEvents).values({
+            actorType: "system",
+            action: "node.endpoint_egress_auto_rotated",
+            targetType: "node",
+            targetId: ep.nodeId,
+            metadata: {
+              endpointId: ep.id,
+              address: ep.address,
+              previousExitIpId: selection.previousExit?.id ?? null,
+              previousExitIpv4: selection.previousExit?.ipv4 ?? null,
+              nextExitIpId: selection.nextExit.id,
+              nextExitIpv4: selection.nextExit.ipv4,
+              runId: run.runId,
+            },
+          });
+          rotationNotices.push({
+            dedupKey: `${REACHABILITY_NOTIFY_JOB_TYPE}:egress-auto-rotate:${ep.id}:${run.runId}`,
+            text: formatEgressAutoRotateNotice({
+              nodeName: node.name,
+              endpointName: ep.name,
+              address: ep.address,
+              previousExit: selection.previousExit,
+              nextExit: selection.nextExit,
+            }),
+          });
+          rotatedNodeIds.add(ep.nodeId);
+        }
+
+        if (rotatedNodeIds.size > 0) {
+          await tx.insert(jobOutbox).values(
+            [...rotatedNodeIds].map((nodeId) => ({
+              type: NODE_SYNC_EGRESS_JOB_TYPE,
+              deduplicationKey: `${NODE_SYNC_EGRESS_JOB_TYPE}:${nodeId}:${randomUUID()}`,
+              payload: { nodeId },
+            })),
+          );
+          await tx
+            .update(reachabilityProbe)
+            .set({ runRequestedAt: run.now, updatedAt: new Date() })
+            .where(eq(reachabilityProbe.id, 1));
+        }
       }
 
       // Every node here is locked, so none can be deleted before the commit.
@@ -648,8 +904,19 @@ export class PostgresReachabilityRepository
         });
       }
 
+      if (rotatedNodeIds.size > 0) {
+        await tx
+          .delete(nodeReachabilityResults)
+          .where(
+            and(
+              inArray(nodeReachabilityResults.nodeId, [...rotatedNodeIds]),
+              eq(nodeReachabilityResults.protocol, "awg3"),
+            ),
+          );
+      }
+
       const bridgeNotices = await this.writeBridgeProbeStates(tx, run, targets, write.outcomes, claimed);
-      const notices = [...write.notices, ...bridgeNotices];
+      const notices = [...write.notices, ...bridgeNotices, ...rotationNotices];
       if (notices.length > 0) {
         await tx.insert(jobOutbox).values(outboxRows(notices)).onConflictDoNothing();
       }
@@ -849,6 +1116,8 @@ export class PostgresReachabilityRepository
         enabledProtocols: nodes.enabledProtocols,
         publicIp: nodes.publicIp,
         publicHost: nodes.publicHost,
+        egressMode: nodes.egressMode,
+        egressDefaultIpId: nodes.egressDefaultIpId,
         awgGenerator: nodes.awgGenerator,
         awgMtu: nodes.awgMtu,
         endpointRevision: nodes.vpnEndpointRevision,
@@ -870,18 +1139,24 @@ export class PostgresReachabilityRepository
       )
       .orderBy(nodes.name);
     if (nodeRows.length === 0) return [];
+    const nodeIds = nodeRows.map((node) => node.id);
     const [policyRow] = await db
       .select({ useBridge: portalPolicy.useBridge })
       .from(portalPolicy)
       .limit(1);
     const globalUseBridge = policyRow?.useBridge ?? false;
-    const endpoints = await db
-      .select()
-      .from(nodeVpnEndpoints)
-      // Every registered address, so a node whose addresses all have checks
-      // off is told apart from one that has none.
-      .where(inArray(nodeVpnEndpoints.nodeId, nodeRows.map((node) => node.id)))
-      .orderBy(nodeVpnEndpoints.ordinal);
+    const [endpoints, egressRows] = await Promise.all([
+      db
+        .select()
+        .from(nodeVpnEndpoints)
+        // Every registered address, so a node whose addresses all have checks
+        // off is told apart from one that has none.
+        .where(inArray(nodeVpnEndpoints.nodeId, nodeIds))
+        .orderBy(nodeVpnEndpoints.ordinal),
+      db.select().from(nodeEgressIps).where(inArray(nodeEgressIps.nodeId, nodeIds)),
+    ]);
+    const egressById = new Map(egressRows.map((row) => [row.id, row]));
+    const endpointById = new Map(endpoints.map((ep) => [ep.id, ep]));
     const endpointsByNode = new Map<string, PublicEndpoint[]>();
     for (const endpoint of endpoints) {
       const list = endpointsByNode.get(endpoint.nodeId) ?? [];
@@ -897,6 +1172,17 @@ export class PostgresReachabilityRepository
           .orderBy(desc(vpnKeys.createdAt))
       : [];
 
+    const resolveEndpointExpectedEgress = (
+      node: (typeof nodeRows)[number],
+      endpoint: PublicEndpoint,
+      defaultExitIpv4: string | null,
+    ): string | null => {
+      if (node.egressMode !== "routed") return node.publicIp;
+      const exitId = endpoint.egressIpId ?? node.egressDefaultIpId ?? null;
+      if (exitId) return egressById.get(exitId)?.ipv4 ?? defaultExitIpv4;
+      return isIPv4(endpoint.address) ? endpoint.address : node.publicIp;
+    };
+
     return nodeRows.flatMap((node) =>
       nodeServedProtocols({
         protocol: node.protocol,
@@ -908,6 +1194,9 @@ export class PostgresReachabilityRepository
           ? { bridgeId: node.bridgeId, bridgeName: node.bridgeName, host: node.bridgeHost, port: node.bridgePort }
           : null;
         if (node.bridgeId !== null && protocol === "awg2" && !options.probeDirectWhenBridged) return [];
+        const defaultBucketId = node.egressMode === "routed" ? (node.egressDefaultIpId ?? null) : null;
+        const defaultExitIpv4 =
+          defaultBucketId ? (egressById.get(defaultBucketId)?.ipv4 ?? node.publicIp) : node.publicIp;
         const target: RunTarget = {
           targetId: reachabilityTargetId(node.id, protocol, node.endpointRevision),
           nodeId: node.id,
@@ -918,33 +1207,186 @@ export class PostgresReachabilityRepository
           bridgePath,
           unavailableReason: null,
           config: null,
-          // The node's origin exit IP. Unknown is sent as an explicit null
+          // The node's default exit IP. Unknown is sent as an explicit null
           // only on a bridged path (reachabilityTask.ts), where the endpoint
           // host is the bridge and no fallback comparison makes sense.
-          expectedEgressIp: node.publicIp,
+          expectedEgressIp: defaultExitIpv4,
         };
-        const key = keys.find((k) => k.nodeId === node.id && k.protocol === protocol);
         const registered = endpointsByNode.get(node.id) ?? [];
+        const checked = protocol === "awg3"
+          ? registered.filter((endpoint) => endpoint.enabled && endpoint.reachabilityEnabled)
+          : [];
         // When the probe cannot look at the node at all, every address with
         // checks on reads unknown for that reason instead of its last verdict.
-        const checkedAddresses = protocol === "awg3"
-          ? registered.filter((endpoint) => endpoint.enabled && endpoint.reachabilityEnabled).map(toTargetAddress)
-          : [];
-        const unavailable = (reason: string): RunTarget[] => [{
-          ...target,
+        const checkedAddresses = checked.map((endpoint) =>
+          toTargetAddress(endpoint, resolveEndpointExpectedEgress(node, endpoint, defaultExitIpv4)),
+        );
+        const unavailable = (
+          baseTarget: RunTarget,
+          reason: string,
+          addresses: TargetAddress[],
+        ): RunTarget[] => [{
+          ...baseTarget,
           unavailableReason: reason,
-          ...(checkedAddresses.length > 0 ? { addresses: checkedAddresses } : {}),
+          ...(addresses.length > 0 ? { addresses } : {}),
         }];
-        if (node.bridgeId !== null && bridgePath === null) return unavailable(BRIDGE_UNRENDERABLE_REASON);
-        if (!key) return unavailable("no service key yet");
-        if (key.state === "provisioning") return unavailable("service key is provisioning");
+        if (node.bridgeId !== null && bridgePath === null) {
+          return unavailable(target, BRIDGE_UNRENDERABLE_REASON, checkedAddresses);
+        }
+
+        const via = measuredViaBridge(target) ? target.bridgePath : null;
+        if (protocol === "awg3" && registered.length > 0 && checked.length > 0) {
+          const nodeAwg3Keys = keys.filter((k) => k.nodeId === node.id && k.protocol === "awg3");
+          const primaryEndpoint = registered.find((ep) => ep.ordinal === 1);
+          const buckets = new Map<
+            string,
+            {
+              bucketId: string | null;
+              bKey: string;
+              expectedEgressIp: string | null;
+              disabledExit: boolean;
+              endpoints: PublicEndpoint[];
+            }
+          >();
+          for (const endpoint of checked) {
+            const explicitExit = endpoint.egressIpId ? egressById.get(endpoint.egressIpId) : undefined;
+            const disabledExit = node.egressMode === "routed" && explicitExit !== undefined && !explicitExit.enabled;
+            const bucketId = node.egressMode === "routed" ? (endpoint.egressIpId ?? defaultBucketId) : null;
+            const expectedEgressIp = resolveEndpointExpectedEgress(node, endpoint, defaultExitIpv4);
+            const bKey =
+              node.egressMode !== "routed"
+                ? "__default__"
+                : (bucketId ?? `implicit:${expectedEgressIp ?? endpoint.id}`);
+            const bucket = buckets.get(bKey);
+            if (bucket) {
+              bucket.endpoints.push(endpoint);
+              if (disabledExit) bucket.disabledExit = true;
+            } else {
+              buckets.set(bKey, {
+                bucketId,
+                bKey,
+                expectedEgressIp,
+                disabledExit,
+                endpoints: [endpoint],
+              });
+            }
+          }
+
+          return [...buckets.values()].flatMap(({ bucketId, bKey, expectedEgressIp, disabledExit, endpoints: bucketEndpoints }) => {
+            const bucketTarget: RunTarget = { ...target, expectedEgressIp };
+            const bucketAddresses = bucketEndpoints.map((ep) => toTargetAddress(ep, expectedEgressIp));
+            if (disabledExit) {
+              return unavailable(bucketTarget, "assigned exit IP is disabled", bucketAddresses);
+            }
+            const matchesBucketKey = (k: (typeof nodeAwg3Keys)[number]): boolean => {
+              const keyEp = k.endpointId ? endpointById.get(k.endpointId) : primaryEndpoint;
+              if (keyEp && !keyEp.enabled) return false;
+              const keyExitId = keyEp?.egressIpId ?? defaultBucketId;
+              if (bucketId !== null) {
+                return keyExitId === bucketId;
+              }
+              if (keyExitId !== null) return false;
+              const keyImplicitIp =
+                keyEp && isIPv4(keyEp.address) ? keyEp.address : node.publicIp;
+              return `implicit:${keyImplicitIp ?? keyEp?.id ?? "default"}` === bKey;
+            };
+            const bucketKey =
+              node.egressMode !== "routed"
+                ? (nodeAwg3Keys.find((k) => k.endpointId === null) ?? nodeAwg3Keys[0])
+                : nodeAwg3Keys.find(matchesBucketKey);
+
+            if (!bucketKey) return unavailable(bucketTarget, "no service key yet", bucketAddresses);
+            if (bucketKey.state === "provisioning") {
+              return unavailable(bucketTarget, "service key is provisioning", bucketAddresses);
+            }
+            if (bucketKey.state === "failed") {
+              return unavailable(
+                bucketTarget,
+                `service key failed: ${bucketKey.failureReason ?? "unknown"}`.slice(0, 300),
+                bucketAddresses,
+              );
+            }
+            if (bucketKey.state !== "active" || bucketKey.configCiphertext === null) {
+              return unavailable(bucketTarget, `service key is ${bucketKey.state}`, bucketAddresses);
+            }
+
+            const savedConfig = decryptSecret(
+              {
+                ciphertext: bucketKey.configCiphertext,
+                nonce: bucketKey.configNonce as string,
+                authTag: bucketKey.configAuthTag as string,
+                keyVersion: bucketKey.configKeyVersion as number,
+              },
+              this.options.keyring,
+            );
+            const inspection = inspectAwgVpnLink(savedConfig);
+            const project = projectServiceConfig(savedConfig, bucketKey, node);
+            if (inspection.kind === "awg31") {
+              const bridged = via
+                ? bucketEndpoints.filter((endpoint) =>
+                    endpoint.bridgeMode === "bridge" ||
+                    (endpoint.bridgeMode === "inherit" && globalUseBridge))
+                : [];
+              const port = inspection.endpoint.port;
+              const directTargets = directAddressTargets(
+                { ...bucketTarget, bridgePath: null, ...(via ? { nodeBridged: true as const } : {}) },
+                bucketEndpoints.filter((endpoint) => !bridged.includes(endpoint)),
+                port,
+                project,
+              );
+              if (!via || bridged.length === 0) return directTargets;
+              const diagnostics = options.probeDirectWhenBridged
+                ? directAddressTargets(
+                    { ...bucketTarget, diagnostic: true as const },
+                    bridged,
+                    port,
+                    project,
+                  )
+                : [];
+              if (!options.bridgeMeasurement) {
+                return [{
+                  ...bucketTarget,
+                  targetId: `${bucketTarget.targetId}:bridge:${expectedEgressIp ?? "default"}`,
+                  unavailableReason: BRIDGE_UNSUPPORTED_REASON,
+                  addresses: bridged.map((ep) => toTargetAddress(ep, expectedEgressIp)),
+                }, ...directTargets, ...diagnostics];
+              }
+              return [
+                ...bridgedAddressTargets(bucketTarget, bridged, via, project),
+                ...directTargets,
+                ...diagnostics,
+              ];
+            }
+
+            // Fallback when stored service key cannot be parsed per endpoint.
+            const { config } = project();
+            const configuredTarget = {
+              ...bucketTarget,
+              config,
+              unavailableReason: config === null ? CLIENT_UNRENDERABLE_REASON : null,
+            };
+            if (!via) return [configuredTarget];
+            return [{ ...bucketTarget, unavailableReason: BRIDGE_UNRENDERABLE_REASON }];
+          });
+        }
+
+        const key =
+          keys.find((k) => k.nodeId === node.id && k.protocol === protocol && k.endpointId === null) ??
+          keys.find((k) => k.nodeId === node.id && k.protocol === protocol);
+        if (!key) return unavailable(target, "no service key yet", checkedAddresses);
+        if (key.state === "provisioning") {
+          return unavailable(target, "service key is provisioning", checkedAddresses);
+        }
         if (key.state === "failed") {
-          return unavailable(`service key failed: ${key.failureReason ?? "unknown"}`.slice(0, 300));
+          return unavailable(
+            target,
+            `service key failed: ${key.failureReason ?? "unknown"}`.slice(0, 300),
+            checkedAddresses,
+          );
         }
         if (key.state !== "active" || key.configCiphertext === null) {
-          return unavailable(`service key is ${key.state}`);
+          return unavailable(target, `service key is ${key.state}`, checkedAddresses);
         }
-        const via = measuredViaBridge(target) ? target.bridgePath : null;
         if (via && registered.length === 0 && !options.bridgeMeasurement && !options.probeDirectWhenBridged) {
           return [{ ...target, unavailableReason: BRIDGE_UNSUPPORTED_REASON }];
         }
@@ -961,38 +1403,10 @@ export class PostgresReachabilityRepository
         const inspection = inspectAwgVpnLink(savedConfig);
         const project = projectServiceConfig(savedConfig, key, node);
         if (registered.length > 0 && inspection.kind === "awg31") {
-          // Every address is a server of its own: measured once, on its own
-          // route, with its own profile. The host stored in the service key
-          // is not used for a node with registered addresses.
-          const checked = registered.filter((endpoint) => endpoint.enabled && endpoint.reachabilityEnabled);
-          if (checked.length === 0) return [{ ...target, unavailableReason: NO_CHECKED_ADDRESS_REASON }];
-          const bridged = via
-            ? checked.filter((endpoint) =>
-                endpoint.bridgeMode === "bridge" || (endpoint.bridgeMode === "inherit" && globalUseBridge))
-            : [];
-          const port = inspection.endpoint.port;
-          const directTargets = directAddressTargets(
-            { ...target, bridgePath: null, ...(via ? { nodeBridged: true as const } : {}) },
-            checked.filter((endpoint) => !bridged.includes(endpoint)),
-            port,
-            project,
-          );
-          if (!via || bridged.length === 0) return directTargets;
-          // Opt-in direct diagnostics of bridged addresses never judge them.
-          const diagnostics = options.probeDirectWhenBridged
-            ? directAddressTargets({ ...target, diagnostic: true as const }, bridged, port, project)
-            : [];
-          if (!options.bridgeMeasurement) {
-            return [{
-              ...target,
-              targetId: `${target.targetId}:bridge`,
-              unavailableReason: BRIDGE_UNSUPPORTED_REASON,
-              addresses: bridged.map(toTargetAddress),
-            }, ...directTargets, ...diagnostics];
-          }
-          return [...bridgedAddressTargets(target, bridged, via, project), ...directTargets, ...diagnostics];
+          return [{ ...target, unavailableReason: NO_CHECKED_ADDRESS_REASON }];
         }
         // A node without registered addresses, or an artifact that cannot be
+        // rendered per address: the node target, from the service key.
         // rendered per address: the node target, from the service key.
         const projection = project();
         const { config } = projection;
@@ -1044,14 +1458,29 @@ export class PostgresReachabilityRepository
       }
       const ownerId = (await this.serviceAccountId(tx)) as string;
 
-      const nodeRows = await tx.select().from(nodes);
-      const keys = await tx
-        .select()
-        .from(vpnKeys)
-        .where(and(eq(vpnKeys.ownerId, ownerId), notInArray(vpnKeys.state, ["revoked"])))
-        .orderBy(desc(vpnKeys.createdAt));
+      const [nodeRows, endpointRows, egressRows, keys] = await Promise.all([
+        tx.select().from(nodes),
+        tx
+          .select()
+          .from(nodeVpnEndpoints)
+          .orderBy(asc(nodeVpnEndpoints.ordinal), asc(nodeVpnEndpoints.id)),
+        tx.select().from(nodeEgressIps).where(eq(nodeEgressIps.enabled, true)),
+        tx
+          .select()
+          .from(vpnKeys)
+          .where(and(eq(vpnKeys.ownerId, ownerId), notInArray(vpnKeys.state, ["revoked"])))
+          .orderBy(desc(vpnKeys.createdAt)),
+      ]);
+      const endpointById = new Map(endpointRows.map((ep) => [ep.id, ep]));
+      const endpointsByNode = new Map<string, PublicEndpoint[]>();
+      for (const ep of endpointRows) {
+        const list = endpointsByNode.get(ep.nodeId) ?? [];
+        list.push(ep);
+        endpointsByNode.set(ep.nodeId, list);
+      }
+      const validExitIds = new Set(egressRows.map((row) => row.id));
 
-      const wanted = new Set<string>();
+      const keptLiveKeyIds = new Set<string>();
       let created = 0;
       let revoked = 0;
       let provisioning = 0;
@@ -1068,83 +1497,148 @@ export class PostgresReachabilityRepository
           capabilities: node.capabilities,
           enabledProtocols: node.enabledProtocols,
         });
+        const labelSecret = decryptSecret(
+          {
+            ciphertext: node.labelSecretCiphertext,
+            nonce: node.labelSecretNonce,
+            authTag: node.labelSecretAuthTag,
+            keyVersion: node.labelSecretKeyVersion,
+          },
+          this.options.keyring,
+        );
+        const nodeEndpoints = endpointsByNode.get(node.id) ?? [];
+        const primaryEndpoint = nodeEndpoints.find((ep) => ep.ordinal === 1);
+        const defaultBucketId =
+          node.egressDefaultIpId && validExitIds.has(node.egressDefaultIpId)
+            ? node.egressDefaultIpId
+            : null;
+        const primaryImplicitIp =
+          primaryEndpoint && isIPv4(primaryEndpoint.address) ? primaryEndpoint.address : node.publicIp;
+        const defaultBucketKey =
+          defaultBucketId ?? `implicit:${primaryImplicitIp ?? primaryEndpoint?.id ?? "default"}`;
+
         for (const protocol of protocols) {
-          wanted.add(`${node.id}:${protocol}`);
-          const mine = keys.filter((k) => k.nodeId === node.id && k.protocol === protocol);
-          const live = mine.filter((k) => (LIVE_KEY_STATES as readonly string[]).includes(k.state));
-          if (live.length > 0) {
-            if (
-              live.some(
-                (k) =>
-                  k.state === "provisioning" &&
-                  now.getTime() - k.createdAt.getTime() < PROVISIONING_WAIT_MS,
-              )
-            ) {
-              provisioning += 1;
+          const isRoutedAwg3 = protocol === "awg3" && node.egressMode === "routed";
+          const desiredBuckets: Array<{ bucketKey: string; representativeEndpointId: string | null }> = [];
+          if (isRoutedAwg3) {
+            const seenBuckets = new Set<string>();
+            const checked = nodeEndpoints.filter(
+              (ep) => ep.enabled && ep.reachabilityEnabled,
+            );
+            for (const ep of checked) {
+              const exitId = ep.egressIpId && validExitIds.has(ep.egressIpId)
+                ? ep.egressIpId
+                : defaultBucketId;
+              const expectedIp = isIPv4(ep.address) ? ep.address : node.publicIp;
+              const bKey = exitId ?? `implicit:${expectedIp ?? ep.id}`;
+              if (seenBuckets.has(bKey)) continue;
+              seenBuckets.add(bKey);
+              desiredBuckets.push({
+                bucketKey: bKey,
+                // Always pin routed probe keys to an enabled checked endpoint so
+                // ordinal=1 exit mismatch or disabled siblings never misroute probes.
+                representativeEndpointId: ep.id,
+              });
             }
-            continue;
+            if (desiredBuckets.length === 0) {
+              desiredBuckets.push({ bucketKey: defaultBucketKey, representativeEndpointId: null });
+            }
+          } else {
+            desiredBuckets.push({ bucketKey: "__single__", representativeEndpointId: null });
           }
-          const newest = mine[0];
-          // A node that refused the key (for example, one that is gone) is not
-          // asked again every run.
-          if (
-            newest?.state === "failed" &&
-            now.getTime() - newest.updatedAt.getTime() < FAILED_KEY_RETRY_MS
-          ) {
-            continue;
+
+          const mine = keys.filter((k) => k.nodeId === node.id && k.protocol === protocol);
+          const firstLiveSingle = mine.find(
+            (k) => k.endpointId === null && (LIVE_KEY_STATES as readonly string[]).includes(k.state),
+          ) ?? mine.find((k) => (LIVE_KEY_STATES as readonly string[]).includes(k.state));
+          const bucketOfKey = (key: typeof vpnKeys.$inferSelect): string => {
+            if (!isRoutedAwg3) {
+              if (key.endpointId === null) return "__single__";
+              return firstLiveSingle?.id === key.id ? "__single__" : `extra:${key.id}`;
+            }
+            const keyEp = key.endpointId ? endpointById.get(key.endpointId) : primaryEndpoint;
+            if (!keyEp || !keyEp.enabled) return "__disabled_ep__";
+            const epExit = keyEp.egressIpId ?? null;
+            const resolved = epExit && validExitIds.has(epExit) ? epExit : defaultBucketId;
+            if (resolved) return resolved;
+            const expectedIp = isIPv4(keyEp.address) ? keyEp.address : node.publicIp;
+            return `implicit:${expectedIp ?? keyEp.id}`;
+          };
+
+          for (const { bucketKey, representativeEndpointId } of desiredBuckets) {
+            const bucketKeys = mine.filter((k) => bucketOfKey(k) === bucketKey);
+            const live = bucketKeys.filter((k) =>
+              (LIVE_KEY_STATES as readonly string[]).includes(k.state),
+            );
+            if (live.length > 0) {
+              const primary =
+                (representativeEndpointId === null
+                  ? live.find((k) => k.endpointId === null)
+                  : undefined) ?? live[0]!;
+              keptLiveKeyIds.add(primary.id);
+              if (
+                primary.state === "provisioning" &&
+                now.getTime() - primary.createdAt.getTime() < PROVISIONING_WAIT_MS
+              ) {
+                provisioning += 1;
+              }
+              continue;
+            }
+            const newest = bucketKeys[0];
+            // A node that refused the key (for example, one that is gone) is not
+            // asked again every run.
+            if (
+              newest?.state === "failed" &&
+              now.getTime() - newest.updatedAt.getTime() < FAILED_KEY_RETRY_MS
+            ) {
+              continue;
+            }
+            // The failed attempts it replaces leave no rows behind: they never
+            // reached the node, and a dead node would otherwise collect one per
+            // protocol every day.
+            const failedIds = bucketKeys.filter((k) => k.state === "failed").map((k) => k.id);
+            if (failedIds.length > 0) {
+              await tx.delete(vpnKeys).where(inArray(vpnKeys.id, failedIds));
+            }
+            const keyId = randomUUID();
+            keptLiveKeyIds.add(keyId);
+            keyNumber += 1;
+            await tx.insert(vpnKeys).values({
+              id: keyId,
+              endpointId: representativeEndpointId,
+              ownerId,
+              nodeId: node.id,
+              nodeLabel: deterministicPeerLabel(keyId, Buffer.from(labelSecret, "base64")),
+              protocol,
+              state: "provisioning",
+              deviceType: "unspecified",
+              deviceLabel: "probe",
+              keyNumber,
+              routeProfile: "full_tunnel",
+              awgClientProfile: protocol === "awg3" ? selectAwgClientProfile(1) : null,
+            });
+            await tx.insert(jobOutbox).values({
+              type: "vpn-key.provision",
+              deduplicationKey: `vpn-key.provision:${keyId}`,
+              payload: { keyId },
+            });
+            await tx.insert(auditEvents).values({
+              actorType: "system",
+              action: "reachability.key_created",
+              targetType: "vpn_key",
+              targetId: keyId,
+              metadata: { nodeId: node.id, protocol, endpointId: representativeEndpointId },
+            });
+            created += 1;
+            provisioning += 1;
           }
-          // The failed attempts it replaces leave no rows behind: they never
-          // reached the node, and a dead node would otherwise collect one per
-          // protocol every day.
-          const failedIds = mine.filter((k) => k.state === "failed").map((k) => k.id);
-          if (failedIds.length > 0) {
-            await tx.delete(vpnKeys).where(inArray(vpnKeys.id, failedIds));
-          }
-          const keyId = randomUUID();
-          const labelSecret = decryptSecret(
-            {
-              ciphertext: node.labelSecretCiphertext,
-              nonce: node.labelSecretNonce,
-              authTag: node.labelSecretAuthTag,
-              keyVersion: node.labelSecretKeyVersion,
-            },
-            this.options.keyring,
-          );
-          keyNumber += 1;
-          await tx.insert(vpnKeys).values({
-            id: keyId,
-            ownerId,
-            nodeId: node.id,
-            nodeLabel: deterministicPeerLabel(keyId, Buffer.from(labelSecret, "base64")),
-            protocol,
-            state: "provisioning",
-            deviceType: "unspecified",
-            deviceLabel: "probe",
-            keyNumber,
-            routeProfile: "full_tunnel",
-            awgClientProfile: protocol === "awg3" ? selectAwgClientProfile(1) : null,
-          });
-          await tx.insert(jobOutbox).values({
-            type: "vpn-key.provision",
-            deduplicationKey: `vpn-key.provision:${keyId}`,
-            payload: { keyId },
-          });
-          await tx.insert(auditEvents).values({
-            actorType: "system",
-            action: "reachability.key_created",
-            targetType: "vpn_key",
-            targetId: keyId,
-            metadata: { nodeId: node.id, protocol },
-          });
-          created += 1;
-          provisioning += 1;
         }
       }
 
       const unwanted = keys.filter(
         (k) =>
           (LIVE_KEY_STATES as readonly string[]).includes(k.state) &&
-          !wanted.has(`${k.nodeId}:${k.protocol}`),
+          !keptLiveKeyIds.has(k.id),
       );
       for (const key of unwanted) {
         await tx
@@ -1317,9 +1811,12 @@ export class PostgresReachabilityRepository
           );
           return {
             name: ep.name,
+            entryGroup: `${row.nodeId}:${ep.address}`,
+            entryName: ep.entryName || ep.name,
             status: ep.probeStatus ?? "error",
             // Its own levels only: the node's best row may be the bridge path.
             levels: parsed.success ? parsed.data : null,
+            egressMatch: ep.probeEgressMatch,
             failingSince: ep.probeFailingSince,
             online: epOnline,
             lastPersonHandshakeAt: epHandshake,

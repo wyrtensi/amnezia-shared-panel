@@ -14,7 +14,6 @@ import {
   Moon,
   Server,
   ShieldCheck,
-  Tag,
   Users,
   Wifi,
   X,
@@ -28,8 +27,11 @@ import {
   TableHeader,
   TableRow,
 } from "@/components/ui/table";
+import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { Skeleton } from "@/components/ui/skeleton";
+import { toast } from "sonner";
+import { adoptNodeEgressMode, formatEntryExit } from "@/lib/egress-api";
 import { formatDate } from "@/lib/format";
 import {
   INACTIVE_DAYS,
@@ -53,11 +55,31 @@ import {
   NodeCheckChips,
   type NodeCheckResult,
 } from "@/components/admin/node-check-chips";
-import { NodeMetrics } from "@/components/admin/node-metrics";
+import {
+  METRIC_WARNINGS,
+  cpuCell,
+  metricBytes,
+} from "@/components/admin/node-metrics";
 import { OverviewBridgesBlock } from "@/components/admin/overview-bridges";
+import { BridgeDetailDialog } from "@/components/admin/bridges-tab";
+import { FleetTopologyMap } from "@/components/admin/fleet-topology-map";
+import { NodeDetailDialog } from "@/components/admin/node-detail-dialog";
+import {
+  NodeTopologyDialog,
+  type NodeTopologyFocus,
+} from "@/components/admin/node-topology-dialog";
+import {
+  OverviewAttentionShelf,
+  OverviewStatusStrip,
+  summarizeFleetHealth,
+} from "@/components/admin/overview-status-strip";
 import { NodePublicAddress } from "@/components/admin/node-public-address";
+import { useBridgeInfra, type NodeRouteLabel } from "@/components/admin/use-bridge-infra";
+import { useReachability } from "@/components/admin/use-reachability";
 import { useServiceChecks } from "@/components/admin/use-service-checks";
 import { useT } from "@/lib/i18n/provider";
+import type { AdminReachabilityNode } from "@/lib/types";
+import type { NodeEgressIp } from "@amnezia/contracts";
 
 const METRIC_TONE: Record<string, string> = {
   "chart-1": "bg-chart-1/12 text-chart-1",
@@ -93,12 +115,89 @@ const STATE_LABEL: Record<string, string> = {
 };
 
 export default function AdminOverviewPage() {
-  const { overview, users, requests, nodes, keys, policy, loading, action } =
+  const { overview, users, requests, nodes, keys, policy, loading, action, request, reload } =
     useAdminData();
   // The same fetch the nodes page uses, so the two surfaces cannot disagree
   // about what a server last answered.
   const serviceChecks = useServiceChecks();
+  const reachability = useReachability();
+  const infra = useBridgeInfra();
+  const [adoptingNodeId, setAdoptingNodeId] = React.useState<string | null>(null);
+  const [activeBridgeId, setActiveBridgeId] = React.useState<string | null>(null);
+  const [activeNodeId, setActiveNodeId] = React.useState<string | null>(null);
+  const [activeTopology, setActiveTopology] = React.useState<{
+    nodeId: string;
+    focus: NodeTopologyFocus | null;
+  } | null>(null);
+  const [bridgeReachabilityBusy, setBridgeReachabilityBusy] = React.useState(false);
   const { t, lang } = useT();
+
+  const activeBridge = React.useMemo(
+    () => (activeBridgeId ? infra.bridges.find((b) => b.id === activeBridgeId) ?? null : null),
+    [infra.bridges, activeBridgeId],
+  );
+  const activeNode = React.useMemo(
+    () => (activeNodeId ? nodes.find((n) => n.id === activeNodeId) ?? null : null),
+    [nodes, activeNodeId],
+  );
+  const topologyNode = React.useMemo(
+    () => (activeTopology ? nodes.find((n) => n.id === activeTopology.nodeId) ?? null : null),
+    [nodes, activeTopology],
+  );
+
+  const setBridgeReachability = React.useCallback(
+    async (bridgeId: string, enabled: boolean) => {
+      setBridgeReachabilityBusy(true);
+      try {
+        await request(`/api/admin/vpn-bridges/${encodeURIComponent(bridgeId)}`, {
+          method: "PATCH",
+          body: JSON.stringify({ reachabilityEnabled: enabled }),
+        });
+        await Promise.all([infra.reload(), reachability.reload()]);
+      } catch {
+        toast.error(t("reachability.actionFailed"));
+      } finally {
+        setBridgeReachabilityBusy(false);
+      }
+    },
+    [request, infra, reachability, t],
+  );
+
+  const onlinePeersByNode = React.useMemo(() => {
+    const map = new Map<string, number>();
+    for (const key of keys) {
+      if (typeof key.online !== "boolean") continue;
+      const prev = map.get(key.nodeId) ?? 0;
+      map.set(key.nodeId, prev + (key.online ? 1 : 0));
+    }
+    return map;
+  }, [keys]);
+
+  const egressFailuresByNode = React.useMemo(() => {
+    const byNode = new Map<
+      string,
+      Map<string, Array<{ id: string; name: string; status: "failed" | "error" }>>
+    >();
+    for (const check of serviceChecks.checks) {
+      if (!check.enabled) continue;
+      for (const er of check.egressResults ?? []) {
+        if (er.status === "ok") continue;
+        let byExit = byNode.get(er.nodeId);
+        if (!byExit) {
+          byExit = new Map();
+          byNode.set(er.nodeId, byExit);
+        }
+        const byId = byExit.get(er.egressIpId) ?? [];
+        byId.push({ id: check.id, name: check.name, status: er.status });
+        byExit.set(er.egressIpId, byId);
+        const ipKey = `ip:${er.egressIpv4}`;
+        const byIp = byExit.get(ipKey) ?? [];
+        byIp.push({ id: check.id, name: check.name, status: er.status });
+        byExit.set(ipKey, byIp);
+      }
+    }
+    return byNode;
+  }, [serviceChecks.checks]);
 
   /**
    * The verdicts worth showing on a summary card for one node.
@@ -118,6 +217,32 @@ export default function AdminOverviewPage() {
   };
 
   const pending = requests.filter((request) => request.status === "pending");
+  const fleetHealth = React.useMemo(
+    () =>
+      summarizeFleetHealth({
+        overview,
+        nodes,
+        reachability: reachability.view,
+        serviceChecks: serviceChecks.checks,
+        pendingQuotaCount: pending.length,
+      }),
+    [overview, nodes, reachability.view, serviceChecks.checks, pending.length],
+  );
+  const adoptHostMode = React.useCallback(
+    async (nodeId: string) => {
+      setAdoptingNodeId(nodeId);
+      try {
+        await adoptNodeEgressMode(request, nodeId);
+        toast.success(t("egress.modeAdopted"));
+        await reload();
+      } catch (cause) {
+        toast.error(cause instanceof Error ? cause.message : t("adminData.actionFailed"));
+      } finally {
+        setAdoptingNodeId(null);
+      }
+    },
+    [request, reload, t],
+  );
   const userEmail = (id: string) =>
     users.find((user) => user.id === id)?.email ?? id;
   // The mode the API will approve under: the user's override, else the global.
@@ -262,39 +387,73 @@ export default function AdminOverviewPage() {
   ];
 
   return (
-    <div className="space-y-6">
-      <div className="grid gap-3 sm:grid-cols-2 lg:grid-cols-3">
+    <div className="space-y-5">
+      {!loading ? (
+        <div className="space-y-2.5">
+          <OverviewStatusStrip summary={fleetHealth} t={t} />
+          <OverviewAttentionShelf
+            items={fleetHealth.attention}
+            adoptingId={adoptingNodeId}
+            onAdoptDrift={(nodeId) => void adoptHostMode(nodeId)}
+            t={t}
+          />
+        </div>
+      ) : null}
+
+      <div className="grid grid-cols-2 gap-2.5 sm:grid-cols-3 xl:grid-cols-6">
         {metrics.map((metric) => (
           <Card
             key={metric.label}
             className="transition-shadow hover:shadow-md"
           >
-            <CardContent className="flex items-center justify-between gap-3 p-4">
+            <CardContent className="flex items-center justify-between gap-2.5 p-3">
               <div className="min-w-0">
-                <p className="text-xs text-muted-foreground">{metric.label}</p>
-                <p className="tabular truncate font-display text-2xl font-semibold">
+                <p className="truncate text-[11px] text-muted-foreground">{metric.label}</p>
+                <p className="tabular truncate font-display text-xl font-semibold">
                   {loading ? "—" : metric.value}
                 </p>
                 {!loading && metric.sub ? (
-                  <p className="mt-0.5 truncate text-xs text-muted-foreground">
+                  <p className="mt-0.5 text-[11px] leading-tight text-muted-foreground">
                     {metric.sub}
                   </p>
                 ) : null}
               </div>
               <span
                 className={cn(
-                  "flex h-11 w-11 shrink-0 items-center justify-center rounded-xl",
+                  "flex h-9 w-9 shrink-0 items-center justify-center rounded-lg",
                   metric.attention
                     ? "bg-warning/20 text-warning"
                     : METRIC_TONE[metric.tone],
                 )}
               >
-                <metric.icon className="h-5 w-5" />
+                <metric.icon className="h-4 w-4" />
               </span>
             </CardContent>
           </Card>
         ))}
       </div>
+
+      {loading && nodes.length === 0 ? (
+        <Skeleton className="h-48 rounded-xl" />
+      ) : (
+        <FleetTopologyMap
+          nodes={nodes}
+          bridges={infra.bridges}
+          routeByNode={infra.routeByNode}
+          serviceChecks={serviceChecks.checks}
+          reachability={reachability.view}
+          activeKeysCount={overview?.activeKeys ?? keys.length}
+          onlineDevicesCount={overview?.onlineDevices ?? 0}
+          onOpenBridge={(bridgeId) => setActiveBridgeId(bridgeId)}
+          onOpenNode={(nodeId) => setActiveNodeId(nodeId)}
+          onOpenVariant={(nodeId, endpointId) =>
+            setActiveTopology({ nodeId, focus: { kind: "variant", id: endpointId } })
+          }
+          onOpenExit={(nodeId, exitId) =>
+            setActiveTopology({ nodeId, focus: { kind: "exit", id: exitId } })
+          }
+        />
+      )}
 
       <div className="grid gap-3 lg:grid-cols-3">
         <DistributionCard
@@ -343,6 +502,12 @@ export default function AdminOverviewPage() {
                 key={node.id}
                 node={node}
                 checkResults={visibleChecks(node)}
+                route={infra.routeByNode.get(node.id)}
+                onlinePeers={onlinePeersByNode.get(node.id)}
+                reachabilityNode={reachability.byNode.get(node.id)}
+                probeFailThreshold={reachability.view?.probe?.failThreshold ?? 2}
+                egressFailures={egressFailuresByNode.get(node.id)}
+                onOpenDetail={() => setActiveNodeId(node.id)}
               />
             ))}
           </div>
@@ -568,6 +733,54 @@ export default function AdminOverviewPage() {
       </Card>
 
       <PanelUpdateCard />
+
+      <BridgeDetailDialog
+        bridge={activeBridge}
+        onClose={() => setActiveBridgeId(null)}
+        onDone={async () => {
+          await Promise.all([infra.reload(), reload(), reachability.reload()]);
+        }}
+        request={request}
+        reachabilityBusy={bridgeReachabilityBusy}
+        onSetReachability={setBridgeReachability}
+        onOpenNode={(nodeId) => {
+          setActiveBridgeId(null);
+          setActiveNodeId(nodeId);
+        }}
+      />
+      <NodeDetailDialog
+        node={activeNode}
+        onClose={() => setActiveNodeId(null)}
+        keys={keys}
+        infra={infra}
+        serviceChecks={serviceChecks}
+        reachability={reachability}
+        action={action}
+        request={request}
+        reload={reload}
+        onOpenTopology={(nodeId, focus) => {
+          setActiveNodeId(null);
+          setActiveTopology({ nodeId, focus: focus ?? null });
+        }}
+        onOpenBridge={(bridgeId) => {
+          setActiveNodeId(null);
+          setActiveBridgeId(bridgeId);
+        }}
+      />
+      <NodeTopologyDialog
+        node={topologyNode}
+        initialFocus={activeTopology?.focus ?? null}
+        onClose={() => setActiveTopology(null)}
+        request={request}
+        reload={reload}
+        onSavePublicEndpoint={async (nodeId, publicEndpoint) => {
+          await request(`/api/admin/nodes/${nodeId}`, {
+            method: "PATCH",
+            body: JSON.stringify({ publicEndpoint }),
+          });
+          await Promise.all([reload(), reachability.reload()]);
+        }}
+      />
     </div>
   );
 }
@@ -588,14 +801,64 @@ export default function AdminOverviewPage() {
 function OverviewNodeCard({
   node,
   checkResults,
+  route,
+  onlinePeers,
+  reachabilityNode,
+  probeFailThreshold,
+  egressFailures,
+  onOpenDetail,
 }: {
   node: AdminNode;
   checkResults: NodeCheckResult[];
+  route?: NodeRouteLabel;
+  onlinePeers?: number;
+  reachabilityNode?: AdminReachabilityNode;
+  probeFailThreshold: number;
+  egressFailures?: Map<string, Array<{ id: string; name: string; status: "failed" | "error" }>>;
+  onOpenDetail?: () => void;
 }) {
-  const { t } = useT();
+  const { t, lang } = useT();
   const peers = node.peerCount ?? 0;
   const fill = Math.min(100, (peers / Math.max(1, node.maxPeers)) * 100);
   const failing = checkResults.filter((result) => result.status !== "ok").length;
+  const endpoints = node.publicEndpoints ?? [];
+  const visibleEndpoints = endpoints.slice(0, 3);
+  const hiddenCount = Math.max(0, endpoints.length - visibleEndpoints.length);
+
+  const exitById = new Map<string, NodeEgressIp>(
+    (node.egressIps ?? []).map((ip) => [ip.id, ip]),
+  );
+  const exitByIp = new Map<string, NodeEgressIp>(
+    (node.egressIps ?? []).map((ip) => [ip.ipv4, ip]),
+  );
+  const reachabilityEndpointById = new Map(
+    (reachabilityNode?.publicEndpoints ?? []).map((ep) => [ep.id, ep]),
+  );
+  const unhealthyExitCount = (node.egressIps ?? []).filter(
+    (ip) =>
+      ip.enabled &&
+      (ip.hostState === "missing_ip" ||
+        ip.hostState === "gateway_error" ||
+        ip.hostState === "daemon_offline"),
+  ).length;
+  const nonHealthyDaemon =
+    node.egressDaemonState === "conflict" ||
+    node.egressDaemonState === "degraded" ||
+    node.egressDaemonState === "unavailable";
+
+  const metrics = node.metrics;
+  const memLow =
+    metrics?.memAvailableBytes != null &&
+    Number(metrics.memAvailableBytes) < METRIC_WARNINGS.memAvailableBytes;
+  const diskHigh =
+    metrics?.diskUsedPercent != null &&
+    metrics.diskUsedPercent >= METRIC_WARNINGS.diskUsedPercent;
+  const pidsHigh =
+    metrics?.agentPidsCurrent != null &&
+    metrics.agentPidsMax != null &&
+    metrics.agentPidsMax > 0 &&
+    metrics.agentPidsCurrent / metrics.agentPidsMax >= METRIC_WARNINGS.pidsFraction;
+  const cpu = metrics ? cpuCell(metrics, t) : null;
 
   return (
     <Card
@@ -604,107 +867,255 @@ function OverviewNodeCard({
         !node.enabled && "opacity-80",
       )}
     >
-      <CardContent className="flex flex-col gap-3 p-4">
+      <CardContent className="flex flex-col gap-2.5 p-3.5">
         <div className="flex items-start justify-between gap-2">
-          <div className="flex min-w-0 items-center gap-2.5">
+          <div className="flex min-w-0 items-center gap-2">
             <span
               className={cn(
-                "flex size-9 shrink-0 items-center justify-center rounded-lg",
-                node.lastError
+                "flex size-8 shrink-0 items-center justify-center rounded-lg",
+                node.lastError || node.modeDrift || node.egressDaemonState === "conflict"
                   ? "bg-destructive/12 text-destructive"
                   : node.enabled
                     ? "bg-success/15 text-success"
                     : "bg-muted text-muted-foreground",
               )}
             >
-              <Server className="h-5 w-5" />
+              <Server className="h-4 w-4" />
             </span>
             <div className="min-w-0">
-              <p className="truncate font-medium leading-tight">
-                {node.publicName || node.name}
-              </p>
-              {/* The state in words, not only in the tile's colour: a coloured
-                  square is not an answer to "what is wrong with it". */}
-              <p className="truncate text-xs text-muted-foreground">
+              <div className="flex min-w-0 flex-wrap items-center gap-1">
+                {onOpenDetail ? (
+                  <button
+                    type="button"
+                    onClick={onOpenDetail}
+                    className="cursor-pointer truncate text-left text-sm font-medium leading-tight hover:text-primary hover:underline focus-visible:underline focus-visible:outline-none"
+                  >
+                    {node.publicName || node.name}
+                  </button>
+                ) : (
+                  <p className="truncate text-sm font-medium leading-tight">
+                    {node.publicName || node.name}
+                  </p>
+                )}
+                {node.modeDrift ? (
+                  <Badge variant="destructive" className="h-4 shrink-0 px-1 text-[10px]">
+                    {t("egress.driftBadge")}
+                  </Badge>
+                ) : node.egressMode === "routed" ? (
+                  <Badge variant="outline" className="h-4 shrink-0 px-1 text-[10px]">
+                    Routed
+                  </Badge>
+                ) : null}
+                {nonHealthyDaemon && !node.modeDrift && node.egressDaemonState ? (
+                  <Badge
+                    variant={node.egressDaemonState === "conflict" ? "destructive" : "warning"}
+                    className="h-4 shrink-0 px-1 text-[10px]"
+                  >
+                    {t(`egress.daemon.${node.egressDaemonState}`)}
+                  </Badge>
+                ) : null}
+                {unhealthyExitCount > 0 ? (
+                  <Badge variant="destructive" className="h-4 shrink-0 px-1 text-[10px]">
+                    {t("ov.nodeCard.exitIssueBadge", { count: unhealthyExitCount })}
+                  </Badge>
+                ) : null}
+                {route ? (
+                  <Badge variant="default" className="h-4 shrink-0 px-1.5 text-[10px]">
+                    {t("ov.nodeCard.bridgeBadge", { name: route.bridgeName })}
+                  </Badge>
+                ) : null}
+              </div>
+              <p className="truncate text-[11px] text-muted-foreground">
                 {node.lastError ? (
-                  <span className="text-destructive">
-                    {t("nodes.commError")}
-                  </span>
+                  <span className="text-destructive">{t("nodes.commError")}</span>
                 ) : node.enabled ? (
                   t("nodes.working")
                 ) : (
                   t("nodes.stopped")
                 )}
                 {node.publicName ? ` · ${node.name}` : null}
+                {node.agentVersion ? ` · v${node.agentVersion}` : null}
               </p>
             </div>
           </div>
-          <span
-            className="shrink-0 rounded-full bg-muted px-2 py-0.5 text-xs tabular-nums text-muted-foreground"
-            title={t("nodes.capacity")}
-          >
-            {peers}/{node.maxPeers}
-          </span>
+          <div className="flex shrink-0 flex-col items-end gap-1">
+            <span
+              className="rounded-full bg-muted px-2 py-0.5 text-[11px] tabular-nums text-muted-foreground"
+              title={t("nodes.capacity")}
+            >
+              {peers}/{node.maxPeers}
+            </span>
+            {onlinePeers !== undefined ? (
+              <span
+                className={cn(
+                  "rounded-full px-2 py-0.5 text-[10px] font-medium tabular-nums",
+                  onlinePeers > 0
+                    ? "bg-success/15 text-success"
+                    : "bg-muted/70 text-muted-foreground",
+                )}
+              >
+                {t("ov.nodeCard.onlinePeers", { count: onlinePeers })}
+              </span>
+            ) : null}
+          </div>
         </div>
 
-        {/* A groove rather than a grey strip, and a fill that cannot vanish: at
-            a handful of peers out of 500 the bar is a percent wide, which
-            rounded to nothing and read as "nothing in use". */}
-        <div className="h-2 overflow-hidden rounded-full bg-well shadow-[var(--inset-shadow)]">
+        <div className="h-1.5 overflow-hidden rounded-full bg-well shadow-[var(--inset-shadow)]">
           <div
             className={cn(
               "h-full rounded-full transition-all",
-              // Anything above zero keeps a visible sliver: at a handful of
-              // peers out of 500 the width rounds to nothing on screen.
               fill > 0 && "min-w-[0.5rem]",
-              fill >= 90
-                ? "bg-destructive"
-                : fill >= 70
-                  ? "bg-warning"
-                  : "bg-success",
+              fill >= 90 ? "bg-destructive" : fill >= 70 ? "bg-warning" : "bg-success",
             )}
             style={{ width: `${fill}%` }}
           />
         </div>
 
-        {/* One recess per fact, rather than two columns of a shared grid: with
-            a label on the left and a value on the right and nothing between
-            them, which value belonged to which label was a matter of following
-            a line across the card. */}
-        <dl className="space-y-1.5 text-xs text-muted-foreground">
-          <div className="flex items-baseline justify-between gap-3 rounded-md border border-border/60 bg-well px-2 py-1 shadow-[var(--inset-shadow)]">
-            <dt className="flex items-center gap-1">
-              <Globe className="size-3.5 shrink-0" />
-              <span>{t("nodes.publicAddress")}</span>
-            </dt>
-            <dd className="min-w-0 text-right text-foreground">
+        {visibleEndpoints.length > 0 ? (
+          <ul className="space-y-1 text-xs">
+            {visibleEndpoints.map((ep) => {
+              const pair = formatEntryExit(ep.publicAddress, ep.effectiveEgressIp);
+              const rEp = reachabilityEndpointById.get(ep.id);
+              const fails = rEp?.probeConsecutiveFailures ?? ep.probeConsecutiveFailures ?? 0;
+              const incidentOpen = rEp?.incidentOpen ?? ep.incidentOpen ?? false;
+              const egressMismatch = (rEp?.probeEgressMatch ?? ep.probeEgressMatch) === false;
+              const reachState = rEp?.reachability?.state ?? ep.reachability?.state;
+              const probeStatus = rEp?.probeStatus ?? ep.probeStatus;
+              const exitObj =
+                (ep.egressIpId ? exitById.get(ep.egressIpId) : undefined) ??
+                (ep.effectiveEgressIp ? exitByIp.get(ep.effectiveEgressIp) : undefined) ??
+                (node.egressDefaultIpId ? exitById.get(node.egressDefaultIpId) : undefined);
+              const exitDotTone =
+                !exitObj
+                  ? null
+                  : exitObj.hostState === "active"
+                    ? "bg-success"
+                    : exitObj.hostState === "pending" || exitObj.hostState === "daemon_offline"
+                      ? "bg-warning"
+                      : exitObj.hostState === "disabled"
+                        ? "bg-muted-foreground/40"
+                        : "bg-destructive";
+              const failingExitChecks =
+                (exitObj ? egressFailures?.get(exitObj.id) : undefined) ??
+                (ep.egressIpId ? egressFailures?.get(ep.egressIpId) : undefined) ??
+                (ep.effectiveEgressIp ? egressFailures?.get(`ip:${ep.effectiveEgressIp}`) : undefined) ??
+                [];
+
+              return (
+                <li
+                  key={ep.id}
+                  className="space-y-1 rounded-md border border-border/50 bg-well px-2.5 py-1.5"
+                >
+                  <div className="flex flex-wrap items-center justify-between gap-1.5">
+                    <span className="flex min-w-0 items-center gap-1.5">
+                      <span
+                        className={cn(
+                          "size-1.5 shrink-0 rounded-full",
+                          egressMismatch || reachState === "blocked" || probeStatus === "failed" || incidentOpen
+                            ? "bg-destructive"
+                            : fails > 0 && !incidentOpen
+                              ? "bg-warning"
+                              : reachState === "ok" || probeStatus === "ok"
+                                ? "bg-success"
+                                : "bg-muted-foreground/40",
+                        )}
+                      />
+                      <span className="break-words font-medium text-foreground">
+                        {ep.name}
+                      </span>
+                    </span>
+                    <div className="flex flex-wrap items-center gap-1">
+                      {!incidentOpen && fails > 0 ? (
+                        <Badge
+                          variant="warning"
+                          className="h-4 px-1.5 text-[10px] tabular-nums"
+                        >
+                          {t("ov.nodeCard.preAlertBadge", {
+                            fails,
+                            threshold: probeFailThreshold,
+                          })}
+                        </Badge>
+                      ) : null}
+                      {failingExitChecks.slice(0, 2).map((chk) => (
+                        <Badge
+                          key={chk.id}
+                          variant={chk.status === "failed" ? "destructive" : "warning"}
+                          className="h-4 px-1.5 text-[10px]"
+                        >
+                          {t("ov.nodeCard.serviceFailBadge", { name: chk.name })}
+                        </Badge>
+                      ))}
+                    </div>
+                  </div>
+                  {pair ? (
+                    <div className="flex items-center gap-1.5 pl-3">
+                      {exitDotTone ? (
+                        <span
+                          className={cn("size-1.5 shrink-0 rounded-full", exitDotTone)}
+                          title={exitObj ? t(`egress.hostState.${exitObj.hostState}`) : undefined}
+                        />
+                      ) : null}
+                      <code className="font-mono text-[11px] text-muted-foreground">
+                        {pair}
+                      </code>
+                    </div>
+                  ) : null}
+                </li>
+              );
+            })}
+            {hiddenCount > 0 ? (
+              <li className="text-right text-[11px] text-muted-foreground">
+                <Badge variant="outline" className="h-4 px-1.5 text-[10px]">
+                  {t("ov.nodeCard.moreVariants", { count: hiddenCount })}
+                </Badge>
+              </li>
+            ) : null}
+          </ul>
+        ) : (
+          <div className="flex items-baseline justify-between gap-2 rounded-md border border-border/50 bg-well px-2 py-1 text-xs">
+            <span className="flex items-center gap-1 text-muted-foreground">
+              <Globe className="size-3 shrink-0" />
+              {t("nodes.publicAddress")}
+            </span>
+            <span className="min-w-0 text-right text-foreground">
               <NodePublicAddress
                 host={node.publicHost}
                 ip={node.publicIp}
                 resolvedAt={node.publicIpResolvedAt}
               />
-            </dd>
+            </span>
           </div>
-          <div className="flex items-baseline justify-between gap-3 rounded-md border border-border/60 bg-well px-2 py-1 shadow-[var(--inset-shadow)]">
-            <dt className="flex items-center gap-1">
-              <Tag className="size-3.5 shrink-0" />
-              <span>{t("nodes.agentVersion")}</span>
-            </dt>
-            {/* A dash means the node has not reported one — it predates the
-                release that added the field — not that it is running nothing. */}
-            <dd className="truncate text-right font-mono text-xs text-foreground">
-              {node.agentVersion ?? "—"}
-            </dd>
-          </div>
-        </dl>
+        )}
 
-        <div className="space-y-1.5 border-t pt-3">
-          <NodeCardSection icon={Cpu}>{t("nodes.metrics.title")}</NodeCardSection>
-          <NodeMetrics metrics={node.metrics} endpoint={node.endpoint} />
+        <div className="flex flex-wrap items-center gap-x-2.5 gap-y-1 rounded-md border border-border/50 bg-well px-2 py-1 text-[11px] tabular-nums">
+          <span className="flex items-center gap-1 text-muted-foreground">
+            <Cpu className="size-3" />
+            {cpu ? cpu.value : "—"}
+          </span>
+          <span className={cn(memLow ? "font-medium text-destructive" : "text-muted-foreground")}>
+            RAM {metrics ? `${metricBytes(metrics.memAvailableBytes, lang)} ${t("nodes.metrics.free")}` : "—"}
+          </span>
+          <span className={cn(diskHigh ? "font-medium text-destructive" : "text-muted-foreground")}>
+            Disk {metrics?.diskUsedPercent != null ? `${metrics.diskUsedPercent}%` : "—"}
+          </span>
+          <span
+            className={cn(
+              metrics?.awg3Up === false
+                ? "font-medium text-destructive"
+                : "text-muted-foreground",
+            )}
+          >
+            AWG3 {metrics?.awg3Up === null || !metrics ? "—" : metrics.awg3Up ? t("nodes.metrics.up") : t("nodes.metrics.down")}
+          </span>
+          {pidsHigh && metrics ? (
+            <span className="font-medium text-destructive">
+              PID {metrics.agentPidsCurrent}/{metrics.agentPidsMax}
+            </span>
+          ) : null}
         </div>
 
         {checkResults.length > 0 ? (
-          <div className="space-y-1.5 border-t pt-3">
+          <div className="space-y-1">
             <NodeCardSection
               icon={ShieldCheck}
               action={
@@ -721,8 +1132,7 @@ function OverviewNodeCard({
           </div>
         ) : null}
 
-        <div className="space-y-1.5 border-t pt-3">
-          <NodeCardSection icon={ArrowUpDown}>{t("nodes.traffic")}</NodeCardSection>
+        <div className="flex items-center justify-between gap-2 border-t pt-2 text-xs">
           <InlineTraffic
             today={node.traffic?.today}
             week={node.traffic?.week}

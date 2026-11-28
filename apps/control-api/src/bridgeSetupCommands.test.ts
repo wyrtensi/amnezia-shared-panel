@@ -1,5 +1,23 @@
+import { execFileSync } from "node:child_process";
+import { fileURLToPath } from "node:url";
 import { describe, expect, it } from "vitest";
 import { bridgeSetupCommands, routeSetupCommands, shellQuote } from "./bridgeSetupCommands.js";
+
+const BRIDGE_WYTUNNEL_SCRIPT = fileURLToPath(
+  new URL("../../../infra/bridge/scripts/install-wytunnel-bridge.sh", import.meta.url),
+);
+const NODE_WYTUNNEL_SCRIPT = fileURLToPath(
+  new URL("../../../infra/node/scripts/install-wytunnel-node.sh", import.meta.url),
+);
+
+const splitArgsFromCommand = (cmd: string, scriptPath: string): string[] => {
+  const idx = cmd.indexOf(scriptPath);
+  expect(idx).toBeGreaterThan(-1);
+  // Arguments produced by bridgeSetupCommands for standard fixtures are unquoted tokens;
+  // check exact parsing for all tokens following the script path.
+  const tail = cmd.slice(idx + scriptPath.length).trim();
+  return tail ? tail.split(/\s+/) : [];
+};
 
 const BRIDGE_ID = "3f1c2a40-7b6d-4d2e-8a11-0c9e5b7d1a22";
 const ROUTE_ID = "0b6f9a52-3c1d-4e7a-9b88-1f2a3c4d5e6f";
@@ -69,5 +87,185 @@ describe("bridge setup commands", () => {
       bridgeControlTcpPort: 7000,
     });
     expect(commands.install).toContain("--bridge-ip '1.2.3.4; curl evil'");
+  });
+
+  it("builds WyTunnel node, bridge, and disable-FRP commands with pool and rotation flags", () => {
+    const commands = routeSetupCommands({
+      id: ROUTE_ID,
+      bridgeId: BRIDGE_ID,
+      publicUdpPort: 41005,
+      udpPortStart: 41000,
+      bridgePublicIpv4: "198.51.100.7",
+      bridgeControlTcpPort: 7000,
+      nodePublicIp: "203.0.113.10",
+      transport: "wytunnel",
+      transportPort: 14105,
+      transportConfig: {
+        poolSize: 10,
+        poolRotateIntervalSec: 2700,
+        poolRotateDrainSec: 5,
+        keepaliveSec: 25,
+        fec: { k: 20, m: 1 },
+        handshakeMode: "tls_client_hello",
+        ebpfEnabled: false,
+      },
+      bridgeFrpsEnabled: false,
+    });
+    expect(commands.install).toContain("/opt/amnezia-panel-node/scripts/install-wytunnel-node.sh");
+    expect(commands.install).toContain("--remote-port 41005");
+    expect(commands.install).toContain("--transport-port 14105");
+    expect(commands.install).toContain("--udp-pool-start 41000");
+    expect(commands.install).not.toContain("--slot ");
+    expect(commands.install).toContain("--fec 20:1");
+    expect(commands.install).toContain("--handshake-mode tls_client_hello");
+    expect(commands.install).toContain("--pool-mode");
+    expect(commands.install).toContain("--no-ebpf");
+    expect(commands.bridgeInstall).toContain("/opt/amnezia-bridge/scripts/install-wytunnel-bridge.sh");
+    expect(commands.bridgeInstall).toContain("--remote-port 41005");
+    expect(commands.bridgeInstall).toContain("--udp-pool-start 41000");
+    expect(commands.bridgeInstall).not.toContain("--slot ");
+    expect(commands.bridgeInstall).not.toContain("--bridge-id ");
+    expect(commands.bridgeInstall).not.toContain("--public-port ");
+    expect(commands.bridgeInstall).toContain("--node-ip 203.0.113.10");
+    expect(commands.bridgeInstall).toContain("--pool-size 10");
+    expect(commands.bridgeInstall).toContain("--pool-rotate-interval 2700");
+    expect(commands.bridgeInstall).toContain("--disable-frps");
+    expect(commands.disableFrpc).toBe(
+      `sudo systemctl disable --now amnezia-frpc@${ROUTE_ID}.service`,
+    );
+    expect(commands.disableFrps).toBe(
+      "sudo bash /opt/amnezia-bridge/scripts/toggle-frps.sh --disable",
+    );
+
+    const nodeArgs = splitArgsFromCommand(
+      commands.dryRun,
+      "/opt/amnezia-panel-node/scripts/install-wytunnel-node.sh",
+    );
+    const nodeDryOut = execFileSync(
+      "bash",
+      [NODE_WYTUNNEL_SCRIPT, ...nodeArgs, "--node-primary-ip", "203.0.113.10", "--wan-if", "eth0"],
+      { encoding: "utf8" },
+    );
+    expect(nodeDryOut).toContain("listen_faketcp  = 203.0.113.10:14105/tcp");
+    expect(nodeDryOut).toContain("tun             = pts-5 (10.251.5.1 <-> 10.251.5.2)");
+
+    const bridgeArgs = splitArgsFromCommand(
+      commands.bridgeDryRun ?? "",
+      "/opt/amnezia-bridge/scripts/install-wytunnel-bridge.sh",
+    );
+    const bridgeDryOut = execFileSync(
+      "bash",
+      [BRIDGE_WYTUNNEL_SCRIPT, ...bridgeArgs, "--wan-if", "eth0"],
+      { encoding: "utf8" },
+    );
+    expect(bridgeDryOut).toContain("target_faketcp  = 203.0.113.10:14105");
+    expect(bridgeDryOut).toContain("tun             = ptc-5 (10.250.5.1 <-> 10.250.5.2)");
+    expect(nodeDryOut).toContain("--handshake-mode tls13");
+    expect(bridgeDryOut).toContain("--handshake-mode tls13");
+  });
+
+  it("propagates custom handshake SNI, HTTP WebSocket Upgrade, and Base64 custom payload cleanly", () => {
+    const tlsSni = routeSetupCommands({
+      id: ROUTE_ID,
+      bridgeId: BRIDGE_ID,
+      publicUdpPort: 41006,
+      udpPortStart: 41000,
+      bridgePublicIpv4: "198.51.100.7",
+      bridgeControlTcpPort: 7000,
+      nodePublicIp: "203.0.113.11",
+      transport: "wytunnel",
+      transportPort: 14106,
+      transportConfig: {
+        handshakeMode: "tls_client_hello",
+        handshakeSni: "edge.example.net",
+      },
+    });
+    expect(tlsSni.install).toContain("--handshake-mode tls_client_hello");
+    expect(tlsSni.install).toContain("--handshake-sni edge.example.net");
+    expect(tlsSni.bridgeInstall).toContain("--handshake-sni edge.example.net");
+
+    const ws = routeSetupCommands({
+      id: ROUTE_ID,
+      bridgeId: BRIDGE_ID,
+      publicUdpPort: 41006,
+      udpPortStart: 41000,
+      bridgePublicIpv4: "198.51.100.7",
+      bridgeControlTcpPort: 7000,
+      nodePublicIp: "203.0.113.11",
+      transport: "wytunnel",
+      transportPort: 14106,
+      transportConfig: {
+        handshakeMode: "http_ws_upgrade",
+        handshakeSni: "cdn.example.net",
+        handshakePath: "/ws/tunnel",
+      },
+    });
+    const wsNodeArgs = splitArgsFromCommand(
+      ws.dryRun,
+      "/opt/amnezia-panel-node/scripts/install-wytunnel-node.sh",
+    );
+    const wsNodeOut = execFileSync(
+      "bash",
+      [NODE_WYTUNNEL_SCRIPT, ...wsNodeArgs, "--node-primary-ip", "203.0.113.11", "--wan-if", "eth0"],
+      { encoding: "utf8" },
+    );
+    expect(wsNodeOut).toContain("--handshake-mode http-ws --handshake-sni cdn.example.net --handshake-path /ws/tunnel");
+
+    const custom = routeSetupCommands({
+      id: ROUTE_ID,
+      bridgeId: BRIDGE_ID,
+      publicUdpPort: 41006,
+      udpPortStart: 41000,
+      bridgePublicIpv4: "198.51.100.7",
+      bridgeControlTcpPort: 7000,
+      nodePublicIp: "203.0.113.11",
+      transport: "wytunnel",
+      transportPort: 14106,
+      transportConfig: {
+        handshakeMode: "custom",
+        handshakePacketData: "FgMBAAUAAAAAAQ==",
+      },
+    });
+    const customBridgeArgs = splitArgsFromCommand(
+      custom.bridgeDryRun ?? "",
+      "/opt/amnezia-bridge/scripts/install-wytunnel-bridge.sh",
+    );
+    const customBridgeOut = execFileSync(
+      "bash",
+      [BRIDGE_WYTUNNEL_SCRIPT, ...customBridgeArgs, "--wan-if", "eth0"],
+      { encoding: "utf8" },
+    );
+    expect(customBridgeOut).toContain("--handshake-mode custom --handshake-packet-data FgMBAAUAAAAAAQ== --filter-handshake");
+  });
+
+  it("propagates custom WyTunnel release repo and version tag cleanly through installers", () => {
+    const cmd = routeSetupCommands({
+      id: ROUTE_ID,
+      bridgeId: BRIDGE_ID,
+      publicUdpPort: 41007,
+      udpPortStart: 41000,
+      bridgePublicIpv4: "198.51.100.7",
+      bridgeControlTcpPort: 7000,
+      nodePublicIp: "203.0.113.12",
+      transport: "wytunnel",
+      transportPort: 14107,
+      wytunnelRepo: "custom/wytunnel",
+      wytunnelVersion: "v0.2.1",
+    });
+    expect(cmd.install).toContain("--repo custom/wytunnel");
+    expect(cmd.install).toContain("--version v0.2.1");
+    expect(cmd.bridgeInstall).toContain("--repo custom/wytunnel");
+    expect(cmd.bridgeInstall).toContain("--version v0.2.1");
+
+    const bridgeArgs = splitArgsFromCommand(
+      cmd.bridgeDryRun ?? "",
+      "/opt/amnezia-bridge/scripts/install-wytunnel-bridge.sh",
+    );
+    const bridgeOut = execFileSync(
+      "bash",
+      [BRIDGE_WYTUNNEL_SCRIPT, ...bridgeArgs, "--wan-if", "eth0"],
+      { encoding: "utf8" },
+    );
+    expect(bridgeOut).toContain("version         = v0.2.1");
   });
 });

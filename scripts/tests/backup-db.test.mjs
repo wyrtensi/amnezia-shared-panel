@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import { execFile } from "node:child_process";
-import { access, mkdir, mkdtemp, readFile, writeFile } from "node:fs/promises";
+import { access, mkdir, mkdtemp, readFile, utimes, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import path from "node:path";
 import test from "node:test";
@@ -187,4 +187,76 @@ test("deploy.sh fails before invoking docker when neither stack is configured", 
   assert.doesNotMatch(stdout, /Backing up/);
   assert.doesNotMatch(stdout, /\[1\/4\]/);
   await assert.rejects(access(path.join(dir, "backups")));
+});
+
+test("backup-db.sh passes compose.override.yaml when present and prunes older dumps beyond BACKUP_KEEP_COUNT", async () => {
+  const dir = await fixture({ prodEnv: true });
+  await writeFile(path.join(dir, "infra", "prod", "compose.override.yaml"), "services: {}\n");
+  const binDir = path.join(dir, "bin");
+  await mkdir(binDir, { recursive: true });
+  const dockerLog = path.join(dir, "docker.log");
+  await writeFile(
+    path.join(binDir, "docker"),
+    `#!/usr/bin/env bash
+printf '%s\n' "$*" >> "${dockerLog}"
+if [ "$1" = "compose" ]; then
+  printf -- '-- mock sql dump\n'
+fi
+`,
+    { mode: 0o755 },
+  );
+  const backupsDir = path.join(dir, "backups");
+  await mkdir(backupsDir, { recursive: true });
+  const old1 = path.join(backupsDir, "panel-db-20260101T000001Z.sql.gz");
+  const old2 = path.join(backupsDir, "panel-db-20260101T000002Z.sql.gz");
+  await writeFile(old1, "old-1\n");
+  await writeFile(old2, "old-2\n");
+  await utimes(old1, new Date("2026-01-01T00:00:01Z"), new Date("2026-01-01T00:00:01Z"));
+  await utimes(old2, new Date("2026-01-01T00:00:02Z"), new Date("2026-01-01T00:00:02Z"));
+
+  const { code, stdout } = await runBash([backupScriptPath, backupsDir], {
+    cwd: dir,
+    env: {
+      PATH: `${binDir}:${process.env.PATH ?? ""}`,
+      BACKUP_KEEP_COUNT: "2",
+    },
+  });
+
+  assert.equal(code, 0);
+  assert.match(stdout, /Pruned 1 old backup\(s\), keeping newest 2/);
+  const logged = await readFile(dockerLog, "utf8");
+  assert.match(logged, /compose -f infra\/prod\/compose\.yaml -f infra\/prod\/compose\.override\.yaml exec -T postgres pg_dump/);
+  await assert.rejects(access(path.join(backupsDir, "panel-db-20260101T000001Z.sql.gz")));
+});
+
+test("restore-db.sh stops control-api and worker and always restarts them on failure", async () => {
+  const dir = await fixture({ prodEnv: true });
+  const binDir = path.join(dir, "bin");
+  await mkdir(binDir, { recursive: true });
+  const dockerLog = path.join(dir, "docker.log");
+  await writeFile(
+    path.join(binDir, "docker"),
+    `#!/usr/bin/env bash
+printf '%s\n' "$*" >> "${dockerLog}"
+for arg in "$@"; do
+  if [ "$arg" = "psql" ]; then
+    exit 1
+  fi
+done
+`,
+    { mode: 0o755 },
+  );
+  const { gzipSync } = await import("node:zlib");
+  const dumpPath = path.join(dir, "sample.sql.gz");
+  await writeFile(dumpPath, gzipSync("-- sample dump\n"));
+
+  const { code } = await runBash([restoreScriptPath, dumpPath], {
+    cwd: dir,
+    env: { PATH: `${binDir}:${process.env.PATH ?? ""}` },
+  });
+
+  assert.notEqual(code, 0);
+  const lines = (await readFile(dockerLog, "utf8")).trim().split(/\r?\n/);
+  assert.match(lines[0], /stop control-api worker$/);
+  assert.match(lines[lines.length - 1], /start control-api worker$/);
 });

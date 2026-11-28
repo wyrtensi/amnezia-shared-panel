@@ -468,13 +468,14 @@ withHost("a dry run plans the spool and the units and creates neither", async (h
 withHost("the agent gets exactly one read-write mount (the request spool) and no Docker socket", async () => {
   const compose = await readFile(composePath, "utf8");
   const mounts = compose.match(/^\s+- \$\{[A-Z_]+[^\n]*:\/[^\n]*$/gm) ?? [];
-  assert.equal(mounts.length, 5, mounts.join("\n"));
+  assert.equal(mounts.length, 6, mounts.join("\n"));
   const writable = mounts.filter((line) => !line.endsWith(":ro"));
   assert.deepEqual(
     writable.map((line) => line.trim()),
     ["- ${BRIDGE_UPDATE_SPOOL:-/var/lib/amnezia-bridge/update}/requests:/var/lib/amnezia-bridge/update/requests"],
   );
   assert.match(compose, /\/results:\/var\/lib\/amnezia-bridge\/update\/results:ro$/m);
+  assert.match(compose, /\/run\/amnezia-wytunnel\}:\/run\/amnezia-wytunnel:ro$/m);
   assert.doesNotMatch(compose, /docker\.sock/);
   assert.match(compose, /BRIDGE_AGENT_IMAGE_REPOSITORY: \$\{BRIDGE_AGENT_IMAGE_REPOSITORY:-\}/);
   assert.match(compose, /BRIDGE_UPDATE_SPOOL_DIR: \/var\/lib\/amnezia-bridge\/update$/m);

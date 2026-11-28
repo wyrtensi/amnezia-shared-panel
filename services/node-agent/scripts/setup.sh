@@ -634,12 +634,24 @@ setup_xray_stats() {
     run_quiet "apt install python3" $SUDO apt-get install -y -qq python3
   fi
 
+  local tmp_json stats_result
   tmp_json="$(mktemp)"
 
   $SUDO docker exec amnezia-xray sh -lc 'cat /opt/amnezia/xray/server.json 2>/dev/null || echo "{}"' > "$tmp_json" 2>>"$LOG_FILE"
 
-  python3 "$ROOT_DIR/scripts/xray/setup_xray_stats.py" "$tmp_json" >>"$LOG_FILE" 2>&1
+  if ! stats_result="$(python3 "$ROOT_DIR/scripts/xray/setup_xray_stats.py" "$tmp_json" 2>>"$LOG_FILE")"; then
+    warn "Не удалось подготовить конфиг Xray Stats API — настройка пропущена"
+    rm -f "$tmp_json"
+    return 0
+  fi
 
+  if [ "$stats_result" = "unchanged" ]; then
+    rm -f "$tmp_json"
+    ok "Xray Stats API уже настроен"
+    return 0
+  fi
+
+  $SUDO docker exec amnezia-xray cp /opt/amnezia/xray/server.json /opt/amnezia/xray/server.json.bak >>"$LOG_FILE" 2>&1 || true
   $SUDO docker cp "$tmp_json" amnezia-xray:/opt/amnezia/xray/server.json >>"$LOG_FILE" 2>&1
   rm -f "$tmp_json"
 
@@ -705,9 +717,7 @@ main() {
     setup_pm2_startup
   fi
 
-  if [ "${IS_UPDATE:-0}" -eq 0 ]; then
-    setup_xray_stats
-  fi
+  setup_xray_stats
 
   show_completion
 }

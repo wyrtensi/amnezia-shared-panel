@@ -9,6 +9,20 @@ describe("resolveBridgeConfig", () => {
       observationStaleMs: 300_000,
       managementHosts: ["host.docker.internal"],
       agentImageRepository: undefined,
+      wytunnelReleaseRepo: "wyrtensi/wytunnel",
+      wytunnelReleaseVersion: undefined,
+    });
+  });
+
+  it("parses WYTUNNEL_RELEASE_REPO and WYTUNNEL_RELEASE_VERSION safely", () => {
+    expect(
+      resolveBridgeConfig({
+        WYTUNNEL_RELEASE_REPO: " custom-org/wytunnel ",
+        WYTUNNEL_RELEASE_VERSION: "0.2.5",
+      }),
+    ).toMatchObject({
+      wytunnelReleaseRepo: "custom-org/wytunnel",
+      wytunnelReleaseVersion: "v0.2.5",
     });
   });
 

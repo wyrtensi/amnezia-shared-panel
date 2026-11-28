@@ -47,13 +47,13 @@ export function OverviewBridgesBlock({
           </Link>
         </Button>
       </div>
-      <div className="grid items-start gap-3 sm:grid-cols-2 lg:grid-cols-3">
+      <div className="grid items-start gap-2.5 sm:grid-cols-2 lg:grid-cols-3">
         {bridges.items.map((bridge) => (
           <Card key={bridge.id}>
-            <CardContent className="space-y-1.5 p-4">
-              <div className="flex items-center justify-between gap-2">
-                <p className="min-w-0 truncate font-medium leading-tight">{bridge.name}</p>
-                <Badge variant={STATUS_VARIANT[bridge.managementStatus]}>
+            <CardContent className="space-y-1.5 p-3">
+              <div className="flex items-start justify-between gap-2">
+                <p className="min-w-0 truncate text-sm font-medium leading-tight">{bridge.name}</p>
+                <Badge variant={STATUS_VARIANT[bridge.managementStatus]} className="shrink-0">
                   {t(`bridge.status.${bridge.managementStatus}`)}
                 </Badge>
               </div>

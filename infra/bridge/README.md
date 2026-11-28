@@ -497,6 +497,15 @@ Check from a host that is not a node that the control port does not answer,
 and from a node that it does. A node that cannot reach the bridge at all can
 use a relay (`install-frpc.sh --control-via`, see the bridges runbook).
 
+## WyTunnel transport (optional FRP replacement)
+
+Bridges support two per-route transports: **`frp_tcp`** (classic FRP over forced TLS/TCP) and **`wytunnel`** ([`wyrtensi/wytunnel`](https://github.com/wyrtensi/wytunnel) — Rust FakeTCP UDP tunnel with optional persistent multi-tunnel pool, seamless staggered auto-rotation, and zero TCP-over-TCP meltdown).
+
+- **Multi-tunnel pool (default 10 tunnels/node):** each WyTunnel route keeps `N` FakeTCP streams warm between bridge and node (`--pool-size 10`), sticky-routes client sessions across healthy streams with sub-millisecond failover, and gracefully rotates individual streams on schedule (`--pool-rotate-interval 1800`, `--pool-rotate-drain 30`) so no single FakeTCP flow lives forever and users notice zero interruption.
+- **Bridge side:** `sudo bash /opt/amnezia-bridge/scripts/install-wytunnel-bridge.sh --route-id <id> --remote-port <udp> --node-ip <node-ip> --transport-port <tcp> --udp-pool-start <udp-start> --pool-size 10 --pool-rotate-interval 2700 --pool-rotate-drain 5 [--dry-run]`. Creates `amnezia-wytunnel-client@<route-id>.service`, writes a metadata file atomically under `/run/amnezia-wytunnel/` (mounted read-only into `amnezia-bridge-agent`), and binds a root-accessible Unix metrics socket (`/run/amnezia-wytunnel/client-<route-id>.sock`) that `bridge-agent` polls for live pool health, RTT, rotations, and failovers.
+- **Node side:** `sudo bash /opt/amnezia-panel-node/scripts/install-wytunnel-node.sh --route-id <id> --bridge-ip <bridge-ip> --remote-port <udp> --transport-port <tcp> --udp-pool-start <udp-start> --pool-mode [--local-udp-port <awg-udp>] [--dry-run]`. Creates `amnezia-wytunnel-server@<route-id>.service` deriving its TUN interface from `--transport-port` and forwarding straight to the local AWG 3.1 UDP listener.
+- **Zero-overhead inactive FRP:** when switching a node route from `frp_tcp` to `wytunnel`, stop and disable the unused `frpc` unit on the node (`systemctl disable --now amnezia-frpc@<route-id>`). When a bridge has no FRP routes left, mark `frpsEnabled = false` in the panel (or `bridge-update <id> --frps=off`) and run `sudo bash /opt/amnezia-bridge/scripts/toggle-frps.sh --disable` on the bridge host so `amnezia-frps.service` consumes **0 RAM / 0 CPU** and the panel does not raise false `FRPS_UNREACHABLE` alerts.
+
 ## Exit codes
 
 0 success or no-op, 2 bad arguments, 11 protected file missing or unsafe,

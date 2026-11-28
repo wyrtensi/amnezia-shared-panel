@@ -1,5 +1,9 @@
 import { z } from "zod";
-import type { ProtocolKind } from "@amnezia/contracts";
+import {
+  hostNetworkReportSchema,
+  type NodeEgressMode,
+  type ProtocolKind,
+} from "@amnezia/contracts";
 
 const protocolForAgent = (protocol: ProtocolKind): "amneziawg2" | "amneziawg3" =>
   protocol === "awg2" ? "amneziawg2" : "amneziawg3";
@@ -90,6 +94,7 @@ const serverSchema = z.object({
       reason: z.string().nullable(),
     })
     .nullish(),
+  egressReport: hostNetworkReportSchema.nullish(),
 });
 const nullableMetricSchema = z.number().nonnegative().nullable();
 const percentSchema = z.number().min(0).max(100);
@@ -254,6 +259,66 @@ export type NodeCheckRequest = {
   timeoutMs?: number;
 };
 
+export type NodeClientEgressHint = {
+  exitIp: string;
+  dnsPrimary?: string;
+  amneziaDnsDnat?: boolean;
+  enforceDnsDnat?: boolean;
+  routingTableId?: number;
+};
+
+export type NodeEgressDesiredExit = {
+  id: string;
+  ipv4: string;
+  interfaceName?: string;
+  gatewayIpv4?: string;
+  routingTableId?: number;
+  dnsPrimary: string;
+  dnsSecondary?: string;
+  amneziaDnsDnat: boolean;
+  enforceDnsDnat: boolean;
+  enabled: boolean;
+};
+
+export type NodeEgressDesiredPeer = {
+  tunnelIpv4: string;
+  exitIp: string;
+  dnsPrimary?: string;
+  amneziaDnsDnat: boolean;
+  enforceDnsDnat: boolean;
+  routingTableId?: number;
+  enabled: boolean;
+};
+
+export type NodeEgressDesiredEntryMark = {
+  entryIpv4: string;
+  routingTableId?: number;
+};
+
+export type NodeEgressDesiredState = {
+  schemaVersion: 1;
+  blockSmtp: boolean;
+  isolatePrivate: boolean;
+  exits: NodeEgressDesiredExit[];
+  peers: NodeEgressDesiredPeer[];
+  entryMarks?: NodeEgressDesiredEntryMark[];
+};
+
+const putServerEgressResponseSchema = z.object({
+  ok: z.boolean(),
+  warnings: z.array(z.string()).optional(),
+  report: hostNetworkReportSchema,
+});
+
+const postServerEgressModeResponseSchema = z.object({
+  ok: z.boolean(),
+  report: hostNetworkReportSchema.optional(),
+  error: z.string().optional(),
+});
+
+export type PutServerEgressResponse = z.infer<typeof putServerEgressResponseSchema>;
+export type PostServerEgressModeResponse = z.infer<typeof postServerEgressModeResponseSchema>;
+
 export interface NodeAgent {
   getHealth: () => Promise<NodeHealth>;
   getServer: () => Promise<NodeServer>;
@@ -270,19 +335,26 @@ export interface NodeAgent {
     enabled: boolean;
     prefix?: string;
   }) => Promise<SetNodeIpv6RejectStubOutcome>;
+  putServerEgress: (desired: NodeEgressDesiredState) => Promise<PutServerEgressResponse | null>;
+  switchEgressMode: (mode: NodeEgressMode) => Promise<PostServerEgressModeResponse>;
   listClients: () => Promise<NodeClientRecord[]>;
   createClient: (
     label: string,
     protocol: ProtocolKind,
+    egress?: NodeClientEgressHint,
   ) => Promise<CreatedNodeClient>;
   deleteClient: (publicKey: string, protocol: ProtocolKind) => Promise<void>;
   // null when this agent does not serve the route - it predates service checks.
   // Not an error: it is the answer, and the poll must not fail because of it.
-  runChecks: (checks: NodeCheckRequest[]) => Promise<NodeCheckResult[] | null>;
+  runChecks: (
+    checks: NodeCheckRequest[],
+    options?: { egressIpv4?: string },
+  ) => Promise<NodeCheckResult[] | null>;
   setClientStatus: (
     publicKey: string,
     protocol: ProtocolKind,
     status: "active" | "disabled",
+    egress?: NodeClientEgressHint,
   ) => Promise<void>;
 }
 
@@ -322,12 +394,15 @@ export const createNodeAgentClient = ({
     getServer: async () => serverSchema.parse(await request("/server")),
     getServerLoad: async () =>
       serverLoadSchema.parse(await request("/server/load")),
-    runChecks: async (checks) => {
+    runChecks: async (checks, options) => {
       if (checks.length === 0) return [];
       try {
         const payload = await request("/checks/run", {
           method: "POST",
-          body: JSON.stringify({ checks }),
+          body: JSON.stringify({
+            checks,
+            ...(options?.egressIpv4 ? { egressIpv4: options.egressIpv4 } : {}),
+          }),
         });
         return runChecksResponseSchema.parse(payload).results;
       } catch (error) {
@@ -392,6 +467,52 @@ export const createNodeAgentClient = ({
         throw error;
       }
     },
+    putServerEgress: async (desired) => {
+      try {
+        const payload = await request("/server/egress", {
+          method: "PUT",
+          body: JSON.stringify(desired),
+        });
+        return putServerEgressResponseSchema.parse(payload);
+      } catch (error) {
+        if (error instanceof Error && /status 404/.test(error.message)) return null;
+        throw error;
+      }
+    },
+    switchEgressMode: async (mode) => {
+      const response = await fetchImpl(`${baseUrl.replace(/\/$/, "")}/server/egress/mode`, {
+        method: "POST",
+        signal: AbortSignal.timeout(Math.max(timeoutMs, 60_000)),
+        headers: {
+          accept: "application/json",
+          "content-type": "application/json",
+          "x-api-key": apiKey,
+        },
+        body: JSON.stringify({ mode }),
+      });
+      const text = await response.text();
+      let jsonBody: unknown = null;
+      if (text) {
+        try {
+          jsonBody = JSON.parse(text);
+        } catch {
+          jsonBody = null;
+        }
+      }
+      if (!response.ok) {
+        const rawErr =
+          jsonBody && typeof jsonBody === "object"
+            ? ((jsonBody as { message?: unknown; error?: unknown }).message ??
+              (jsonBody as { error?: unknown }).error)
+            : null;
+        const errMsg =
+          typeof rawErr === "string" && rawErr.length > 0
+            ? rawErr
+            : `Node-agent mode switch failed with status ${response.status}`;
+        return { ok: false, error: errMsg.slice(0, 300) };
+      }
+      return postServerEgressModeResponseSchema.parse(jsonBody);
+    },
     listClients: async () => {
       const items: NodeClientRecord[] = [];
       let skip = 0;
@@ -404,13 +525,14 @@ export const createNodeAgentClient = ({
         if (skip >= page.total || page.items.length === 0) return items;
       }
     },
-    createClient: async (label, protocol) => {
+    createClient: async (label, protocol, egress) => {
       const response = createResponseSchema.parse(
         await request("/clients", {
           method: "POST",
           body: JSON.stringify({
             clientName: label,
             protocol: protocolForAgent(protocol),
+            ...(protocol === "awg3" && egress ? { egress } : {}),
           }),
         }),
       );
@@ -425,13 +547,14 @@ export const createNodeAgentClient = ({
         }),
       });
     },
-    setClientStatus: async (publicKey, protocol, status) => {
+    setClientStatus: async (publicKey, protocol, status, egress) => {
       await request("/clients", {
         method: "PATCH",
         body: JSON.stringify({
           clientId: publicKey,
           protocol: protocolForAgent(protocol),
           status,
+          ...(protocol === "awg3" && egress ? { egress } : {}),
         }),
       });
     },

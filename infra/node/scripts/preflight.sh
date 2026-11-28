@@ -125,12 +125,22 @@ available_kb="$(df -Pk "$NODE_DIR" | awk 'NR==2 { print $4 }')"
 # flat constant with no derivation, and it refused hosts a deploy would have
 # fitted on comfortably -- a gate that stops the redeploy of a node that is
 # running fine protects nothing.
-[ "$available_kb" -ge 2097152 ] || \
-  fail "at least 2 GiB of free disk is required (have $(( available_kb / 1024 )) MiB); reclaim with: docker image prune -a, journalctl --vacuum-size=100M"
+if [ -n "${PREFLIGHT_DISK_MIN_KB:-}" ]; then
+  case "$PREFLIGHT_DISK_MIN_KB" in
+    ''|*[!0-9]*) fail "PREFLIGHT_DISK_MIN_KB must be a non-negative integer" ;;
+  esac
+  [ "$available_kb" -ge "$PREFLIGHT_DISK_MIN_KB" ] || \
+    fail "at least $(( PREFLIGHT_DISK_MIN_KB / 1024 )) MiB of free disk is required (have $(( available_kb / 1024 )) MiB); reclaim with: docker image prune -a, journalctl --vacuum-size=100M"
+else
+  [ "$available_kb" -ge 2097152 ] || \
+    fail "at least 2 GiB of free disk is required (have $(( available_kb / 1024 )) MiB); reclaim with: docker image prune -a, journalctl --vacuum-size=100M"
+fi
 # Above the floor but below what a host should be run at: one more image or one
 # unattended month of logs away from the floor, so say so without blocking.
-[ "$available_kb" -ge 3145728 ] || \
-  info "NOTE: free disk is below the recommended 3 GiB (have $(( available_kb / 1024 )) MiB). The deploy will proceed, but reclaim space soon: docker image prune -a, journalctl --vacuum-size=100M"
+if [ -z "${PREFLIGHT_DISK_MIN_KB:-}" ]; then
+  [ "$available_kb" -ge 3145728 ] || \
+    info "NOTE: free disk is below the recommended 3 GiB (have $(( available_kb / 1024 )) MiB). The deploy will proceed, but reclaim space soon: docker image prune -a, journalctl --vacuum-size=100M"
+fi
 available_mem_kb="$(awk '/^MemAvailable:/ { print $2 }' /proc/meminfo)"
 [ -n "$available_mem_kb" ] || fail "cannot read available memory"
 # The 350 MiB gate sizes a node at the 500-peer maximum, so scale it with the
@@ -212,7 +222,7 @@ for state_dir in "$STATE_DIR" "$STATE_DIR_AWG3"; do
     "$state_dir/wireguard_server_public_key.key" \
     "$state_dir/wireguard_psk.key" \
     "$state_dir/clientsTable"; do
-    if [ -e "$sensitive_file" ]; then
+    if [ -e "$sensitive_file" ] || [ -L "$sensitive_file" ]; then
       [ ! -L "$sensitive_file" ] || fail "state file must not be a symlink: $sensitive_file"
       [ "$(stat -c '%a' "$sensitive_file")" = "600" ] || fail "state file permissions must be 0600: $sensitive_file"
     fi
@@ -225,6 +235,17 @@ for state_dir in "$STATE_DIR" "$STATE_DIR_AWG3"; do
       --entrypoint node \
       "$node_image" \
       -e "JSON.parse(require('fs').readFileSync('/state/clientsTable','utf8'))"
+  fi
+done
+
+for sensitive_file in \
+  "$STATE_DIR_AWG3/egress-mode" \
+  "$STATE_DIR_AWG3/container-ipv4" \
+  "$STATE_DIR_AWG3/ipv6-reject-stub.env" \
+  "$EGRESS_STATE_FILE"; do
+  if [ -e "$sensitive_file" ] || [ -L "$sensitive_file" ]; then
+    [ ! -L "$sensitive_file" ] || fail "state file must not be a symlink: $sensitive_file"
+    [ "$(stat -c '%a' "$sensitive_file")" = "600" ] || fail "state file permissions must be 0600: $sensitive_file"
   fi
 done
 

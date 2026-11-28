@@ -90,26 +90,42 @@ chmod 0770 "$SPOOL_DIR"
 
 echo "==> Installing systemd units"
 mkdir -p "$UNIT_DIR"
+svc_tmp="$(mktemp "${UNIT_DIR}/.amnezia-node-agent-update.service.XXXXXX")"
 sed -e "s#/opt/amnezia-node#${NODE_DIR}#g" \
     -e "s#/var/lib/amnezia-node/update#${SPOOL_DIR}#g" \
     -e "s#^Environment=NODE_AGENT_UPDATE_REPO=\$#Environment=NODE_AGENT_UPDATE_REPO=${UPDATE_REPO}#" \
     "${NODE_DIR}/systemd/amnezia-node-agent-update.service" \
-    >"${UNIT_DIR}/amnezia-node-agent-update.service"
+    >"$svc_tmp"
+chmod 0644 "$svc_tmp"
+mv -f "$svc_tmp" "${UNIT_DIR}/amnezia-node-agent-update.service"
+
+path_tmp="$(mktemp "${UNIT_DIR}/.amnezia-node-agent-update.path.XXXXXX")"
 sed -e "s#/var/lib/amnezia-node/update#${SPOOL_DIR}#g" \
     "${NODE_DIR}/systemd/amnezia-node-agent-update.path" \
-    >"${UNIT_DIR}/amnezia-node-agent-update.path"
+    >"$path_tmp"
+chmod 0644 "$path_tmp"
+mv -f "$path_tmp" "${UNIT_DIR}/amnezia-node-agent-update.path"
 
 systemctl daemon-reload
 verify_effective_execstart amnezia-node-agent-update.service "$UPDATER_SCRIPT"
 systemctl enable --now amnezia-node-agent-update.path
 
+set_env_key() {
+  local key="$1" value="$2" env_file="${NODE_DIR}/.env" env_tmp
+  env_tmp="$(mktemp "${NODE_DIR}/.env.XXXXXX")" || return 1
+  awk -v k="$key" -v v="$value" '
+    $0 ~ ("^" k "=") && !seen { print k "=" v; seen = 1; next }
+    { print }
+    END { if (!seen) print k "=" v }
+  ' "$env_file" >"$env_tmp" || { rm -f "$env_tmp"; return 1; }
+  chmod 600 "$env_tmp"
+  mv -f "$env_tmp" "$env_file"
+}
+
 # The agent needs the same two settings to accept a request at all.
-if ! grep -q '^NODE_AGENT_UPDATE_REPO=' "${NODE_DIR}/.env"; then
-  printf 'NODE_AGENT_UPDATE_REPO=%s\n' "$UPDATE_REPO" >>"${NODE_DIR}/.env"
-fi
-if [ "$SPOOL_DIR" != "/var/lib/amnezia-node/update" ] \
-   && ! grep -q '^NODE_UPDATE_SPOOL_DIR=' "${NODE_DIR}/.env"; then
-  printf 'NODE_UPDATE_SPOOL_DIR=%s\n' "$SPOOL_DIR" >>"${NODE_DIR}/.env"
+set_env_key NODE_AGENT_UPDATE_REPO "$UPDATE_REPO"
+if [ "$SPOOL_DIR" != "/var/lib/amnezia-node/update" ]; then
+  set_env_key NODE_UPDATE_SPOOL_DIR "$SPOOL_DIR"
 fi
 
 cat <<EOF

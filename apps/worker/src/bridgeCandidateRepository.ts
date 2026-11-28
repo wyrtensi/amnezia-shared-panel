@@ -1,7 +1,10 @@
+import { isIPv4 } from "node:net";
 import { and, desc, eq, inArray, isNull, lte, or } from "drizzle-orm";
 
 import {
   decryptSecret,
+  nodeEgressIps,
+  nodeVpnEndpoints,
   nodes,
   reachabilityProbe,
   users,
@@ -85,6 +88,8 @@ export class PostgresBridgeCandidateRepository implements BridgeCandidateReposit
         publicUdpPort: vpnBridgeRoutes.publicUdpPort,
         bridgePublicIpv4: vpnBridges.publicIpv4,
         nodePublicIp: nodes.publicIp,
+        nodeEgressMode: nodes.egressMode,
+        nodeEgressDefaultIpId: nodes.egressDefaultIpId,
         nodeGenerator: nodes.awgGenerator,
         nodeMtu: nodes.awgMtu,
       })
@@ -94,10 +99,11 @@ export class PostgresBridgeCandidateRepository implements BridgeCandidateReposit
       .where(eq(vpnBridgeRoutes.id, routeId))
       .limit(1);
     if (!row) return null;
-    // The node's AWG 3 service key: the same peer the regular run measures.
-    const [key] = await db
+    // The node's AWG 3 default-exit service key (prefer endpointId IS NULL).
+    const activeServiceKeys = await db
       .select({
         id: vpnKeys.id,
+        endpointId: vpnKeys.endpointId,
         clientProfile: vpnKeys.awgClientProfile,
         ciphertext: vpnKeys.configCiphertext,
         nonce: vpnKeys.configNonce,
@@ -114,8 +120,47 @@ export class PostgresBridgeCandidateRepository implements BridgeCandidateReposit
           eq(vpnKeys.state, "active"),
         ),
       )
-      .orderBy(desc(vpnKeys.createdAt))
-      .limit(1);
+      .orderBy(desc(vpnKeys.createdAt));
+    const key =
+      activeServiceKeys.find((candidate) => candidate.endpointId === null) ??
+      activeServiceKeys[0];
+
+    let nodePublicIp = row.nodePublicIp;
+    if (row.nodeEgressMode === "routed") {
+      const [endpoint] = key?.endpointId
+        ? await db
+            .select({
+              address: nodeVpnEndpoints.address,
+              egressIpId: nodeVpnEndpoints.egressIpId,
+            })
+            .from(nodeVpnEndpoints)
+            .where(
+              and(
+                eq(nodeVpnEndpoints.id, key.endpointId),
+                eq(nodeVpnEndpoints.nodeId, row.nodeId),
+              ),
+            )
+            .limit(1)
+        : [];
+      const targetExitId = endpoint?.egressIpId ?? row.nodeEgressDefaultIpId ?? null;
+      if (targetExitId) {
+        const [resolvedExit] = await db
+          .select({ ipv4: nodeEgressIps.ipv4 })
+          .from(nodeEgressIps)
+          .where(
+            and(
+              eq(nodeEgressIps.id, targetExitId),
+              eq(nodeEgressIps.nodeId, row.nodeId),
+            ),
+          )
+          .limit(1);
+        if (resolvedExit?.ipv4) {
+          nodePublicIp = resolvedExit.ipv4;
+        }
+      } else if (endpoint?.address && isIPv4(endpoint.address)) {
+        nodePublicIp = endpoint.address;
+      }
+    }
     const serviceConfig =
       key?.ciphertext && key.nonce && key.authTag && key.keyVersion !== null
         ? decryptSecret(
@@ -129,7 +174,16 @@ export class PostgresBridgeCandidateRepository implements BridgeCandidateReposit
           )
         : null;
     return {
-      ...row,
+      routeId: row.routeId,
+      nodeId: row.nodeId,
+      state: row.state,
+      retiringSince: row.retiringSince,
+      observedRegistrationMarker: row.observedRegistrationMarker,
+      publicUdpPort: row.publicUdpPort,
+      bridgePublicIpv4: row.bridgePublicIpv4,
+      nodePublicIp,
+      nodeGenerator: row.nodeGenerator,
+      nodeMtu: row.nodeMtu,
       serviceConfig,
       serviceKeyId: key?.id ?? null,
       serviceClientProfile: key?.clientProfile ?? null,

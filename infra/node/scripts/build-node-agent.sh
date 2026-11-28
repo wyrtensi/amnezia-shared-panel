@@ -12,6 +12,7 @@ SCRIPT_DIR="$(CDPATH='' cd -- "$(dirname -- "$0")" && pwd)"
 docker build \
   --platform linux/amd64 \
   --build-context "deploy=$NODE_DIR" \
+  --build-context "egressd=$NODE_DIR/../../services/egress-daemon" \
   --tag amnezia-panel/node-agent:1.0.0-local \
   "$NODE_DIR/../../services/node-agent"
 

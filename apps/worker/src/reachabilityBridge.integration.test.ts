@@ -1385,7 +1385,9 @@ describe("reachability of bridged nodes (real PostgreSQL)", () => {
     expect(down).toHaveLength(1);
     expect(down[0]).toContain(`${node.name}: недоступны адреса из Testland`);
     expect(down[0]).toContain("Direct (192.0.2.10): handshake");
-    expect(down[0]).toContain(`Bridged (192.0.2.20) через мост ${bridge.name} (${bridge.publicIpv4}:41000)`);
+    expect(down[0]).toContain(
+      `Bridged (192.0.2.20 → 192.0.2.10) через мост ${bridge.name} (${bridge.publicIpv4}:41000)`,
+    );
     expect(await stateOf(node.id)).toMatchObject({ status: "failed", alertedAt: null });
 
     await probe.tick(120);

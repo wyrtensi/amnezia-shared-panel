@@ -30,6 +30,7 @@ SPOOL_DIR="${NODE_CAPACITY_SPOOL_DIR:-/var/lib/amnezia-node/capacity}"
 # uid, so anything inside it can be swapped for a symlink before root opens it.
 # /run is root-only and is not mounted into any container.
 LOCK_DIR="${NODE_CAPACITY_LOCK_DIR:-/run/amnezia-node-capacity}"
+RESULT_STAGING_DIR="${NODE_CAPACITY_STAGING_DIR:-$(dirname -- "$SPOOL_DIR")}"
 REQUEST="${SPOOL_DIR}/request.json"
 RESULT="${SPOOL_DIR}/result.json"
 LOG_PUBLIC="${SPOOL_DIR}/apply.log"
@@ -54,14 +55,15 @@ trap cleanup EXIT
 log() { printf '%s\n' "$*" >>"$LOG"; }
 
 # The agent serves the result and the log back to the panel, so both have to be
-# readable by the container uid. mktemp gives 0600 root-owned files; without the
-# chmod the panel would poll a file it is not allowed to open.
+# readable by the container uid. Stage them outside the container-writable spool
+# in a root-owned directory on the same filesystem so mv is an atomic rename(2).
 publish() {
   local src="$1" dest="$2" tmp
-  tmp="$(mktemp "${SPOOL_DIR}/publish.XXXXXX")" || return 1
+  [ "$(stat -c %d "$RESULT_STAGING_DIR")" = "$(stat -c %d "$SPOOL_DIR")" ] || return 1
+  tmp="$(mktemp "${RESULT_STAGING_DIR}/publish.XXXXXX")" || return 1
   cat "$src" >"$tmp" || { rm -f "$tmp"; return 1; }
-  chmod 0644 "$tmp"
-  mv -f "$tmp" "$dest"
+  chmod 0644 "$tmp" || { rm -f "$tmp"; return 1; }
+  mv -f "$tmp" "$dest" || { rm -f "$tmp"; return 1; }
 }
 
 write_result() {
@@ -71,15 +73,17 @@ write_result() {
   msg="${msg//\\/\\\\}"
   msg="${msg//\"/\\\"}"
   msg="${msg//$'\n'/ }"
-  # Write to a FRESH random file in the spool (mktemp: O_EXCL, unpredictable
-  # name - the container can't pre-plant a symlink at it), then rename onto
-  # $RESULT. A same-filesystem rename() replaces whatever is at $RESULT (even a
-  # planted symlink) instead of writing through it as root.
-  tmp="$(mktemp "${SPOOL_DIR}/result.XXXXXX")" || return 1
+  # Write to a FRESH random file outside the container-writable spool, then
+  # rename atomically onto $RESULT so a planted symlink is replaced rather than followed.
+  if [ "$(stat -c %d "$RESULT_STAGING_DIR")" != "$(stat -c %d "$SPOOL_DIR")" ]; then
+    echo "capacity-apply: $RESULT_STAGING_DIR and $SPOOL_DIR are on different filesystems; result not written" >&2
+    return 1
+  fi
+  tmp="$(mktemp "${RESULT_STAGING_DIR}/result.XXXXXX")" || return 1
   printf '{"id":"%s","finishedAt":"%s","ok":%s,"maxPeers":%s,"message":"%s"}\n' \
-    "$ID" "$ts" "$ok" "$PEERS" "$msg" >"$tmp"
-  chmod 0644 "$tmp"
-  mv -f "$tmp" "$RESULT"
+    "$ID" "$ts" "$ok" "$PEERS" "$msg" >"$tmp" || { rm -f "$tmp"; return 1; }
+  chmod 0644 "$tmp" || { rm -f "$tmp"; return 1; }
+  mv -f "$tmp" "$RESULT" || { rm -f "$tmp"; return 1; }
   publish "$LOG" "$LOG_PUBLIC" || true
 }
 

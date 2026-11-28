@@ -103,6 +103,7 @@ AGENT_PORT=7600
 AGENT_IMAGE="${BRIDGE_AGENT_IMAGE:-}"
 AGENT_REPOSITORY="${BRIDGE_AGENT_IMAGE_REPOSITORY:-}"
 NO_NETWORK_TUNING=0
+NO_FRPS=0
 DRY_RUN=0
 
 need_value() { [ "$#" -ge 2 ] || usage_error "$1 needs a value"; }
@@ -116,6 +117,7 @@ while [ "$#" -gt 0 ]; do
     --agent-repository) need_value "$@"; AGENT_REPOSITORY="$2"; shift 2 ;;
     --agent-port) need_value "$@"; AGENT_PORT="$2"; shift 2 ;;
     --no-network-tuning) NO_NETWORK_TUNING=1; shift ;;
+    --no-frps) NO_FRPS=1; shift ;;
     --dry-run) DRY_RUN=1; shift ;;
     *) usage_error "unknown argument: $1" ;;
   esac
@@ -178,12 +180,30 @@ if [ -n "$AGENT_IMAGE" ]; then
     die 61 E_PREREQ "missing host prerequisites for the bridge-agent:$missing (nothing was installed)"
 fi
 
-# ---- 1. frps (unchanged interface) ----------------------------------------
-set -- --bridge-id "$BRIDGE_ID" --control-port "$CONTROL_PORT" \
-  --udp-start "$UDP_START" --udp-end "$UDP_END"
-[ "$NO_NETWORK_TUNING" -eq 1 ] && set -- "$@" --no-network-tuning
-[ "$DRY_RUN" -eq 1 ] && set -- "$@" --dry-run
-sh "$FRPS_INSTALLER" "$@"
+FRPS_ENABLED="true"
+if [ "$NO_FRPS" -eq 1 ]; then
+  FRPS_ENABLED="false"
+elif [ -f "$ENV_FILE" ]; then
+  existing_frps="$(sed -n 's/^BRIDGE_FRPS_ENABLED=//p' "$ENV_FILE" 2>/dev/null | tail -n 1 || true)"
+  if [ "$existing_frps" = "false" ]; then
+    FRPS_ENABLED="false"
+  fi
+fi
+
+# ---- 1. frps (unchanged interface; skipped when BRIDGE_FRPS_ENABLED=false) ----
+if [ "$FRPS_ENABLED" = "true" ]; then
+  set -- --bridge-id "$BRIDGE_ID" --control-port "$CONTROL_PORT" \
+    --udp-start "$UDP_START" --udp-end "$UDP_END"
+  [ "$NO_NETWORK_TUNING" -eq 1 ] && set -- "$@" --no-network-tuning
+  [ "$DRY_RUN" -eq 1 ] && set -- "$@" --dry-run
+  sh "$FRPS_INSTALLER" "$@"
+else
+  if [ "$DRY_RUN" -eq 1 ]; then
+    plan "frps skipped (BRIDGE_FRPS_ENABLED=false; ensure $DASH_ENV_FILE placeholder exists for :ro mount)"
+  else
+    info "frps install skipped (BRIDGE_FRPS_ENABLED=false)"
+  fi
+fi
 
 # ---- 2. bridge-agent -------------------------------------------------------
 if [ -z "$AGENT_IMAGE" ]; then
@@ -231,6 +251,7 @@ BRIDGE_APPLIED_UDP_END=$UDP_END
 BRIDGE_AGENT_PORT=$AGENT_PORT
 BRIDGE_AGENT_IMAGE_REPOSITORY=$APPROVED_REPO
 BRIDGE_UPDATE_SPOOL=$SPOOL_DIR
+BRIDGE_FRPS_ENABLED=$FRPS_ENABLED
 ENV_EOF
 }
 
@@ -274,7 +295,32 @@ if [ ! -f "$TOKEN_FILE" ]; then
   token=""
 fi
 check_token_file
+if [ "$FRPS_ENABLED" = "false" ] && [ ! -f "$DASH_ENV_FILE" ]; then
+  mkdir -p "$(dirname "$DASH_ENV_FILE")"
+  chmod 0755 "$(dirname "$DASH_ENV_FILE")"
+  TMP_DASH="$(mktemp "$(dirname "$DASH_ENV_FILE")/.dashboard.env.XXXXXX")"
+  printf '# WyTunnel-only placeholder (BRIDGE_FRPS_ENABLED=false)\n' >"$TMP_DASH"
+  chmod 0600 "$TMP_DASH"
+  mv -f "$TMP_DASH" "$DASH_ENV_FILE"
+fi
 [ -f "$DASH_ENV_FILE" ] || die 62 E_FILE "missing $DASH_ENV_FILE (install-frps.sh creates it)"
+
+# Pre-create /run/amnezia-wytunnel and persist via tmpfiles.d before Docker starts
+# so the :ro compose mount never binds to a stale/missing tmpfs inode after reboot.
+DEFAULT_WYTUNNEL_RUN_DIR="/run/amnezia-wytunnel"
+if [ -n "${AMNEZIA_VAR:-}" ]; then
+  DEFAULT_WYTUNNEL_RUN_DIR="$VAR/run/amnezia-wytunnel"
+fi
+WYTUNNEL_RUN_DIR="${BRIDGE_WYTUNNEL_RUN_DIR:-$DEFAULT_WYTUNNEL_RUN_DIR}"
+TMPFILES_DIR="${AMNEZIA_TMPFILES_DIR:-$ETC/tmpfiles.d}"
+mkdir -p "$WYTUNNEL_RUN_DIR" "$TMPFILES_DIR"
+chmod 0755 "$WYTUNNEL_RUN_DIR"
+if [ -d "$TMPFILES_DIR" ]; then
+  TMP_TF="$(mktemp "$TMPFILES_DIR/.amnezia-wytunnel.conf.XXXXXX")"
+  printf 'd %s 0755 root root -\n' "$WYTUNNEL_RUN_DIR" >"$TMP_TF"
+  chmod 0644 "$TMP_TF"
+  mv -f "$TMP_TF" "$TMPFILES_DIR/amnezia-wytunnel.conf"
+fi
 
 # The spool exists before the container starts, so Docker does not create the
 # bind-mount sources with its own defaults. The container runs as uid 0 without
@@ -333,7 +379,7 @@ render_unit() {
     -e "s#/etc/amnezia-bridge#$BRIDGE_ETC#g" \
     -e "s#/var/lib/amnezia-bridge#$VAR/lib/amnezia-bridge#g" \
     -e "s#^Environment=BRIDGE_AGENT_UPDATE_REPO=\$#Environment=BRIDGE_AGENT_UPDATE_REPO=$APPROVED_REPO#" \
-    "$HERE/systemd/$1" >"$UNIT_DIR/$1.tmp" && mv -f "$UNIT_DIR/$1.tmp" "$UNIT_DIR/$1"
+    "$HERE/systemd/$1" >"$UNIT_DIR/$1.tmp" && chmod 0644 "$UNIT_DIR/$1.tmp" && mv -f "$UNIT_DIR/$1.tmp" "$UNIT_DIR/$1"
 }
 bash -n "$UPDATER_SCRIPT" 2>/dev/null ||
   die 65 E_UPDATER "$UPDATER_SCRIPT is not a valid bash script; the agent runs, but the panel cannot update it"

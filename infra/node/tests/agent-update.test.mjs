@@ -1,11 +1,13 @@
 import assert from "node:assert/strict";
 import { spawn, spawnSync } from "node:child_process";
+import { createHash } from "node:crypto";
 import {
   chmod,
   lstat,
   mkdir,
   mkdtemp,
   readFile,
+  readlink,
   rm,
   symlink,
   writeFile,
@@ -620,4 +622,322 @@ exit 0
     (await f.dockerCalls()).some((line) => line.includes("compose") && line.includes("awg3")),
     false,
   );
+});
+
+test("agent-update.sh syncs amnezia-egressd.service with daemon-reload before restart and rolls back cleanly", async () => {
+  const upd = await readFile(scriptPath, "utf8");
+  assert.match(upd, /IMAGE_DEPLOY_DIR="\$\{NODE_AGENT_IMAGE_DEPLOY_DIR:-\/opt\/node-agent\/deploy\}"/);
+  assert.match(upd, /extract_from_new "systemd\/amnezia-egressd\.service"/);
+  assert.match(upd, /systemctl daemon-reload/);
+  const reloadIdx = upd.indexOf("systemctl daemon-reload", upd.indexOf("if [ \"$UPDATE_EGRESSD_UNIT\" -eq 1 ]; then"));
+  const restartIdx = upd.indexOf("systemctl restart amnezia-egressd.service", reloadIdx);
+  assert.ok(reloadIdx > 0 && restartIdx > reloadIdx, "daemon-reload must run before restarting amnezia-egressd.service");
+});
+
+test("missing stock helper scripts are installed even when compose.yaml did not change", executing, async (t) => {
+  const f = await fixture({
+    compose: COMPOSE_V1,
+    shipped: {
+      [OLD_DIGEST]: { "compose.yaml": COMPOSE_V1 },
+      [NEW_DIGEST]: {
+        "compose.yaml": COMPOSE_V1,
+        "switch-egress-mode.sh": "#!/bin/sh\necho switch\n",
+        "cotenants.sh": "#!/bin/sh\necho cotenants\n",
+        "awg3-geometry.sh": "#!/bin/sh\necho geom\n",
+      },
+    },
+  });
+  t.after(f.cleanup);
+  await f.request({ id: "req-missing-helpers", image: NEW_IMAGE });
+
+  const run = f.run();
+  assert.equal(run.status, 0, run.stderr + run.stdout);
+  assert.equal((await f.result()).ok, true);
+  assert.equal(await readFile(join(f.nodeDir, "scripts", "switch-egress-mode.sh"), "utf8"), "#!/bin/sh\necho switch\n");
+  assert.equal(await readFile(join(f.nodeDir, "scripts", "cotenants.sh"), "utf8"), "#!/bin/sh\necho cotenants\n");
+  assert.equal(await readFile(join(f.nodeDir, "scripts", "awg3-geometry.sh"), "utf8"), "#!/bin/sh\necho geom\n");
+});
+
+test("missing systemd/amnezia-egressd.service is installed into node dir and removed on rollback", executing, async (t) => {
+  const unitV2 = "[Unit]\nDescription=Test egressd\n[Service]\nExecStart=/usr/local/bin/amnezia-egressd\n";
+  const f = await fixture({
+    compose: COMPOSE_V1,
+    health: "unhealthy",
+    shipped: {
+      [OLD_DIGEST]: { "compose.yaml": COMPOSE_V1 },
+      [NEW_DIGEST]: {
+        "compose.yaml": COMPOSE_V1,
+        "amnezia-egressd.service": unitV2,
+      },
+    },
+  });
+  t.after(f.cleanup);
+  await f.request({ id: "req-unit-rollback", image: NEW_IMAGE });
+
+  const run = f.run();
+  assert.notEqual(run.status, 0);
+  assert.equal((await f.result()).ok, false);
+  assert.equal(await exists(join(f.nodeDir, "systemd", "amnezia-egressd.service")), false, "newly added unit template is removed on rollback");
+});
+
+test("amnezia-egressd update rolls back binary, unit, and .env when egressd health gate fails", executing, async (t) => {
+  const f = await fixture({
+    compose: COMPOSE_V1,
+    shipped: {
+      [OLD_DIGEST]: {
+        "compose.yaml": COMPOSE_V1,
+        "amnezia-egressd": "old-bin\n",
+        "amnezia-egressd.service": "[Unit]\nDescription=old\n[Service]\nExecStart=/usr/local/bin/amnezia-egressd\n",
+      },
+      [NEW_DIGEST]: {
+        "compose.yaml": COMPOSE_V1,
+        "amnezia-egressd": "new-bin\n",
+        "amnezia-egressd.service": "[Unit]\nDescription=new\n[Service]\nExecStart=/usr/local/bin/amnezia-egressd\n",
+      },
+    },
+  });
+  t.after(f.cleanup);
+
+  const egressBin = join(f.root, "egressd-bin");
+  const egressUnit = join(f.root, "egressd.service");
+  const nodeUnitDir = join(f.nodeDir, "systemd");
+  await mkdir(nodeUnitDir, { recursive: true });
+  await writeFile(egressBin, "old-bin\n", { mode: 0o755 });
+  await chmod(egressBin, 0o755);
+  await writeFile(egressUnit, "[Unit]\nDescription=old\n[Service]\nExecStart=" + egressBin + "\n", { mode: 0o644 });
+  await writeFile(join(nodeUnitDir, "amnezia-egressd.service"), "[Unit]\nDescription=old\n[Service]\nExecStart=/usr/local/bin/amnezia-egressd\n", { mode: 0o644 });
+
+  // Stub systemctl that reports active/enabled, but no unix socket exists so egressd_healthy fails fast.
+  await writeFile(
+    join(f.root, "bin", "systemctl"),
+    "#!/usr/bin/env bash\nexit 0\n",
+    { mode: 0o755 },
+  );
+  // Speed up sleep during the 5x2s egressd health poll.
+  await writeFile(join(f.root, "bin", "sleep"), "#!/usr/bin/env bash\nexit 0\n", { mode: 0o755 });
+
+  await f.request({ id: "req-egress-fail", image: NEW_IMAGE });
+  const run = f.run({
+    AMNEZIA_EGRESSD_DEST: egressBin,
+    AMNEZIA_EGRESSD_UNIT_DEST: egressUnit,
+    NODE_EGRESS_SOCKET: join(f.root, "missing.sock"),
+  });
+
+  assert.notEqual(run.status, 0);
+  const res = await f.result();
+  assert.equal(res.ok, false);
+  assert.match(res.message, /egressd.*rolled back/i);
+  assert.equal(await readFile(egressBin, "utf8"), "old-bin\n");
+  assert.match(await readFile(egressUnit, "utf8"), /Description=old/);
+  assert.ok((await f.envFile()).includes(`NODE_AGENT_IMAGE=${OLD_IMAGE}`));
+});
+
+test("serializes with .deploy.lock and rejects overlapping operations cleanly", executing, async (t) => {
+  const f = await fixture();
+  t.after(f.cleanup);
+  await mkdir(join(f.nodeDir, ".deploy.lock"));
+  await f.request({ id: "req-locked", image: NEW_IMAGE });
+
+  const run = f.run({ NODE_DEPLOY_LOCK_WAIT_SEC: "1" });
+  assert.notEqual(run.status, 0);
+  const res = await f.result();
+  assert.equal(res.ok, false);
+  assert.match(res.message, /\.deploy\.lock/);
+  assert.equal(await exists(join(f.nodeDir, ".deploy.lock")), true, "pre-existing .deploy.lock is preserved");
+});
+
+test("result.json and update.log are staged outside the container-writable spool", async () => {
+  const script = await readFile(scriptUrl, "utf8");
+  assert.match(script, /RESULT_STAGING_DIR="\$\{NODE_UPDATER_STAGING_DIR:-\$\(dirname -- "\$SPOOL_DIR"\)\}"/);
+  assert.match(script, /stat -c %d "\$RESULT_STAGING_DIR"/);
+  assert.match(script, /mktemp "\$\{RESULT_STAGING_DIR\}\/result\.XXXXXX"/);
+  assert.match(script, /chmod 0644 "\$tmp"/);
+  assert.match(script, /mv -f "\$tmp" "\$RESULT"/);
+  assert.doesNotMatch(script, />"\$RESULT"/);
+});
+
+test("containerd shim override validates SHA-256 and never sources shim-override.env", async () => {
+  const script = await readFile(scriptUrl, "utf8");
+  assert.match(script, /dpkg-divert --package "\$SHIM_DIVERT_PACKAGE"/);
+  assert.match(script, /sha256_file "\$NEW_SHIM_BIN"/);
+  assert.match(script, /reconcile_containerd_shim/);
+  assert.doesNotMatch(script, /(source|\.)\s+"?\$NEW_SHIM_ENV"?/);
+  assert.ok(
+    script.indexOf("reconcile_containerd_shim", script.indexOf("ensure_awg3_ipv6_forwarding")) <
+      script.indexOf("agent_up", script.indexOf("reconcile_containerd_shim")),
+    "reconcile_containerd_shim must run before agent_up so health failures roll back the shim",
+  );
+});
+
+const setupShimHost = async (f, { containerdVersion = "2.2.1", stockText = "#!/usr/bin/env bash\necho 'containerd-shim-runc-v2: Version: 2.2.1'\n" } = {}) => {
+  const shimSysBin = join(f.root, "usr-bin-shim");
+  const shimDivertTarget = `${shimSysBin}.upstream`;
+  const shimOverrideDir = join(f.root, "override-dir");
+  const divertState = join(f.root, "divert.state");
+
+  await writeFile(shimSysBin, stockText, { mode: 0o755 });
+  await chmod(shimSysBin, 0o755);
+
+  await writeFile(
+    join(f.root, "bin", "containerd"),
+    `#!/usr/bin/env bash\necho "containerd github.com/containerd/containerd/v2 ${containerdVersion}"\n`,
+    { mode: 0o755 },
+  );
+
+  await writeFile(
+    join(f.root, "bin", "dpkg-divert"),
+    `#!/usr/bin/env bash
+set -eu
+state="${divertState}"
+pkg="" action="" divert_to="" target=""
+while [ "$#" -gt 0 ]; do
+  case "$1" in
+    --package) pkg="$2"; shift 2 ;;
+    --add) action="add"; shift ;;
+    --remove) action="remove"; shift ;;
+    --divert) divert_to="$2"; shift 2 ;;
+    --listpackage) action="listpackage"; target="$2"; shift 2 ;;
+    --rename) shift ;;
+    *) target="$1"; shift ;;
+  esac
+done
+case "$action" in
+  listpackage)
+    if [ -f "$state" ]; then
+      IFS='|' read -r cur_pkg cur_target cur_divert <"$state"
+      [ "$cur_target" = "$target" ] && printf '%s\\n' "$cur_pkg"
+    fi
+    ;;
+  add)
+    mv "$target" "$divert_to"
+    printf '%s|%s|%s\\n' "$pkg" "$target" "$divert_to" >"$state"
+    ;;
+  remove)
+    [ -f "$state" ] || exit 1
+    IFS='|' read -r cur_pkg cur_target cur_divert <"$state"
+    [ "$cur_pkg" = "$pkg" ] && [ "$cur_target" = "$target" ] || exit 1
+    mv "$cur_divert" "$target"
+    rm -f "$state"
+    ;;
+esac
+`,
+    { mode: 0o755 },
+  );
+
+  return {
+    shimSysBin,
+    shimDivertTarget,
+    shimOverrideDir,
+    divertState,
+    env: {
+      AMNEZIA_SHIM_ALLOW_NONROOT: "1",
+      AMNEZIA_SHIM_SYSTEM_BIN: shimSysBin,
+      AMNEZIA_SHIM_DIVERT_TARGET: shimDivertTarget,
+      AMNEZIA_SHIM_OVERRIDE_DIR: shimOverrideDir,
+      AMNEZIA_CONTAINERD_BIN: join(f.root, "bin", "containerd"),
+    },
+  };
+};
+
+test("SHIM_MODE=override installs verified shim via dpkg-divert and SHIM_MODE=upstream restores stock", executing, async (t) => {
+  const overrideBin = "#!/usr/bin/env bash\necho 'containerd-shim-runc-v2: Version: v2.2.10+ttrpc241'\n";
+  const overrideSha = createHash("sha256").update(overrideBin).digest("hex");
+  const stockText = "#!/usr/bin/env bash\necho 'containerd-shim-runc-v2: Version: 2.2.1'\n";
+  const THIRD_DIGEST = `sha256:${"3".repeat(64)}`;
+  const THIRD_IMAGE = `${REPO}@${THIRD_DIGEST}`;
+
+  const f = await fixture({
+    compose: COMPOSE_V1,
+    shipped: {
+      [OLD_DIGEST]: { "compose.yaml": COMPOSE_V1 },
+      [NEW_DIGEST]: {
+        "compose.yaml": COMPOSE_V1,
+        "shim-override.env": `SHIM_MODE=override\nSHIM_REF=ttrpc-pr241-test\nSHIM_SHA256_2_2=${overrideSha}\n`,
+        "containerd-shim-runc-v2-2.2": overrideBin,
+      },
+      [THIRD_DIGEST]: {
+        "compose.yaml": COMPOSE_V1,
+        "shim-override.env": "SHIM_MODE=upstream\n",
+      },
+    },
+  });
+  t.after(f.cleanup);
+
+  const host = await setupShimHost(f, { containerdVersion: "2.2.1", stockText });
+
+  await f.request({ id: "req-shim-on", image: NEW_IMAGE });
+  const installRun = f.run(host.env);
+  assert.equal(installRun.status, 0, installRun.stderr + installRun.stdout);
+  assert.equal((await f.result()).ok, true);
+  assert.equal(await readlink(host.shimSysBin), join(host.shimOverrideDir, "containerd-shim-runc-v2"));
+  assert.equal(await readFile(host.shimDivertTarget, "utf8"), stockText);
+  assert.match(await readFile(join(host.shimOverrideDir, "shim-override.meta"), "utf8"), /SHIM_REF=ttrpc-pr241-test/);
+
+  await f.request({ id: "req-shim-off", image: THIRD_IMAGE });
+  const revertRun = f.run(host.env);
+  assert.equal(revertRun.status, 0, revertRun.stderr + revertRun.stdout);
+  assert.equal((await f.result()).ok, true);
+  assert.equal((await lstat(host.shimSysBin)).isSymbolicLink(), false);
+  assert.equal(await readFile(host.shimSysBin, "utf8"), stockText);
+  assert.equal(await exists(join(host.shimOverrideDir, "containerd-shim-runc-v2")), false);
+  assert.equal(await exists(host.divertState), false);
+});
+
+test("SHIM_MODE=override rolls back diversion when new node-agent fails health gate", executing, async (t) => {
+  const overrideBin = "#!/usr/bin/env bash\necho 'containerd-shim-runc-v2: Version: v2.2.10+ttrpc241'\n";
+  const overrideSha = createHash("sha256").update(overrideBin).digest("hex");
+  const stockText = "#!/usr/bin/env bash\necho 'containerd-shim-runc-v2: Version: 2.2.1'\n";
+
+  const f = await fixture({
+    compose: COMPOSE_V1,
+    health: "unhealthy",
+    shipped: {
+      [OLD_DIGEST]: { "compose.yaml": COMPOSE_V1 },
+      [NEW_DIGEST]: {
+        "compose.yaml": COMPOSE_V1,
+        "shim-override.env": `SHIM_MODE=override\nSHIM_REF=ttrpc-pr241-test\nSHIM_SHA256_2_2=${overrideSha}\n`,
+        "containerd-shim-runc-v2-2.2": overrideBin,
+      },
+    },
+  });
+  t.after(f.cleanup);
+
+  const host = await setupShimHost(f, { containerdVersion: "2.2.1", stockText });
+
+  await f.request({ id: "req-shim-fail", image: NEW_IMAGE });
+  const run = f.run(host.env);
+  assert.notEqual(run.status, 0);
+  assert.equal((await f.result()).ok, false);
+  assert.equal((await lstat(host.shimSysBin)).isSymbolicLink(), false);
+  assert.equal(await readFile(host.shimSysBin, "utf8"), stockText);
+  assert.equal(await exists(host.divertState), false);
+});
+
+test("SHIM_MODE=override skips fail-safely on containerd version mismatch or checksum mismatch", executing, async (t) => {
+  const overrideBin = "#!/usr/bin/env bash\necho 'containerd-shim-runc-v2: Version: v2.2.10+ttrpc241'\n";
+  const wrongSha = "0".repeat(64);
+  const stockText = "#!/usr/bin/env bash\necho 'containerd-shim-runc-v2: Version: 2.9.0'\n";
+
+  const f = await fixture({
+    compose: COMPOSE_V1,
+    shipped: {
+      [OLD_DIGEST]: { "compose.yaml": COMPOSE_V1 },
+      [NEW_DIGEST]: {
+        "compose.yaml": COMPOSE_V1,
+        "shim-override.env": `SHIM_MODE=override\nSHIM_REF=ttrpc-pr241-test\nSHIM_SHA256_2_2=${wrongSha}\n`,
+        "containerd-shim-runc-v2-2.2": overrideBin,
+      },
+    },
+  });
+  t.after(f.cleanup);
+
+  const host = await setupShimHost(f, { containerdVersion: "2.2.1", stockText });
+
+  await f.request({ id: "req-shim-bad-sha", image: NEW_IMAGE });
+  const run = f.run(host.env);
+  assert.equal(run.status, 0, run.stderr + run.stdout);
+  assert.equal((await f.result()).ok, true);
+  assert.equal((await lstat(host.shimSysBin)).isSymbolicLink(), false);
+  assert.equal(await readFile(host.shimSysBin, "utf8"), stockText);
+  assert.equal(await exists(host.divertState), false);
 });

@@ -62,3 +62,15 @@ test("CI builds the bridge-agent image on every branch push", async () => {
   const ci = await read("../../../.github/workflows/ci.yml");
   assert.match(ci, /docker build services\/bridge-agent/);
 });
+
+test("bridge-agent bundle files are byte-identical to infra/bridge", async () => {
+  const dockerfile = await read("../../../services/bridge-agent/Dockerfile");
+  assert.match(dockerfile, /^COPY bundle \/opt\/amnezia-bridge-bundle$/m);
+  for (const [bundleRel, infraRel] of [
+    ["../../../services/bridge-agent/bundle/compose.yaml", "../compose.yaml"],
+    ["../../../services/bridge-agent/bundle/scripts/install-wytunnel-bridge.sh", "../scripts/install-wytunnel-bridge.sh"],
+    ["../../../services/bridge-agent/bundle/scripts/toggle-frps.sh", "../scripts/toggle-frps.sh"],
+  ]) {
+    assert.equal(await read(bundleRel), await read(infraRel), `${bundleRel} drifted from ${infraRel}`);
+  }
+});

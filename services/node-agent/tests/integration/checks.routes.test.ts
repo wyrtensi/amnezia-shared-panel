@@ -1,6 +1,9 @@
 import { afterAll, afterEach, beforeAll, describe, expect, it, vi } from "vitest";
+import { asValue } from "awilix";
 import { fetch as undiciFetch } from "undici";
 
+import { di } from "@/config/DIContainer";
+import { EgressService } from "@/services/egress";
 import { AppFastifyInstance } from "@/types/shared";
 import { TEST_API_KEY } from "../config/setupTestEnvironment";
 import { closeTestApp, createClientsTestApp } from "../helpers";
@@ -159,5 +162,105 @@ describe("checks routes", () => {
     expect(first.json().results[0].status).toBe("ok");
     expect(second.json().results[0].status).toBe("failed");
     expect(fetchStub).toHaveBeenCalledTimes(2);
+  });
+
+  it("returns status=error when probe.egressIpv4 is requested without EgressService", async () => {
+    const response = await app.inject({
+      method: "POST",
+      url: "/checks/run",
+      headers: AUTH_HEADERS,
+      payload: {
+        checks: [
+          check({
+            probe: {
+              kind: "http",
+              url: "https://1.1.1.1/",
+              method: "GET",
+              egressIpv4: "203.0.113.20",
+            },
+          }),
+        ],
+      },
+    });
+
+    expect(response.statusCode).toBe(200);
+    expect(response.json().results[0]).toMatchObject({
+      status: "error",
+      detail: expect.stringContaining("amnezia-egressd"),
+    });
+  });
+
+  it("routes egressIpv4 HTTP probes via EgressService and enforces SSRF hop guards", async () => {
+    const runHttpCheck = vi.fn(async () => ({
+      status: 200,
+      finalUrl: "https://1.1.1.1/",
+      body: "<html>conversation-container</html>",
+      headers: { "content-type": "text/html" },
+      latencyMs: 18,
+    }));
+    di.container.register({
+      [EgressService.key]: asValue({ runHttpCheck }),
+    });
+
+    const okRes = await app.inject({
+      method: "POST",
+      url: "/checks/run",
+      headers: AUTH_HEADERS,
+      payload: {
+        egressIpv4: "203.0.113.20",
+        checks: [
+          check({
+            probe: {
+              kind: "http",
+              url: "https://1.1.1.1/",
+              method: "GET",
+            },
+            assertions: [
+              { type: "statusIn", statuses: [200] },
+              { type: "bodyContains", value: "conversation-container" },
+            ],
+          }),
+        ],
+      },
+    });
+
+    expect(okRes.statusCode).toBe(200);
+    expect(okRes.json().results[0]).toMatchObject({
+      status: "ok",
+      httpStatus: 200,
+    });
+    expect(runHttpCheck).toHaveBeenCalledWith(
+      expect.objectContaining({
+        egressIpv4: "203.0.113.20",
+        url: "https://1.1.1.1/",
+        followRedirects: false,
+      }),
+      expect.any(AbortSignal),
+    );
+
+    const ssrfRes = await app.inject({
+      method: "POST",
+      url: "/checks/run",
+      headers: AUTH_HEADERS,
+      payload: {
+        checks: [
+          check({
+            probe: {
+              kind: "http",
+              url: "http://127.0.0.1/",
+              method: "GET",
+              egressIpv4: "203.0.113.20",
+            },
+          }),
+        ],
+      },
+    });
+
+    expect(ssrfRes.statusCode).toBe(200);
+    expect(ssrfRes.json().results[0]).toMatchObject({
+      status: "error",
+      detail: expect.stringContaining("refused:"),
+    });
+    expect(runHttpCheck).toHaveBeenCalledTimes(1);
   });
 });

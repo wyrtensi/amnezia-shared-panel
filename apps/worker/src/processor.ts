@@ -6,6 +6,9 @@ import {
   BRIDGE_ROUTE_CANDIDATE_CHECK_JOB_TYPE,
   DEFAULT_IPV6_REJECT_STUB_PREFIX,
   NODE_IPV6_REJECT_STUB_JOB_TYPE,
+  NODE_SWITCH_EGRESS_MODE_JOB_TYPE,
+  NODE_SYNC_EGRESS_JOB_TYPE,
+  nodeEgressModeSchema,
   QUOTA_REQUEST_NOTIFY_JOB_TYPE,
   REACHABILITY_NOTIFY_JOB_TYPE,
   REACHABILITY_WIDGET_JOB_TYPE,
@@ -15,6 +18,8 @@ import {
   reachabilityWidgetPayloadSchema,
   type NodeIpv6RejectStubState,
 } from "@amnezia/contracts";
+import { readBaseClientIpv4 } from "@amnezia/vpn-config";
+import { buildNodeEgressDesiredState, extractPeerIpv4 } from "./nodeEgress.js";
 import { formatQuotaRequestMessage, type TelegramNotifier } from "./telegram.js";
 import type { AccessSyncOutcome } from "./accessReconcile.js";
 import type { NodeAgent } from "./nodeAgent.js";
@@ -43,6 +48,18 @@ const nodeIpv6RejectStubPayloadSchema = nodeJobPayloadSchema.extend({
   enabled: z.boolean(),
   prefix: z.string().min(1).max(64).optional(),
 });
+const nodeSwitchEgressModePayloadSchema = nodeJobPayloadSchema.extend({
+  mode: nodeEgressModeSchema,
+  previousMode: nodeEgressModeSchema.optional(),
+});
+
+const tryExtractBaseClientIpv4 = (vpnConfig: string): string | null => {
+  try {
+    return readBaseClientIpv4(vpnConfig);
+  } catch {
+    return null;
+  }
+};
 
 export type JobProcessorOptions = {
   repository: WorkerRepository;
@@ -99,6 +116,118 @@ const findPeer = (
   clients: Awaited<ReturnType<NodeAgent["listClients"]>>,
   label: string,
 ) => clients.find((client) => client.username === label)?.peers[0];
+
+type NodeEgressSyncContext = NonNullable<
+  Awaited<ReturnType<NonNullable<WorkerRepository["loadNodeEgressSyncContext"]>>>
+>;
+
+const hydrateMissingTunnelIpv4s = async (
+  syncContext: NodeEgressSyncContext,
+  nodeAgent: NodeAgent,
+  repository: WorkerRepository,
+  observedAt: Date,
+): Promise<NodeEgressSyncContext> => {
+  const needsBackfill = syncContext.keys.some(
+    (key) =>
+      key.protocol === "awg3" &&
+      (key.state === "active" || key.state === "disabled") &&
+      !key.tunnelIpv4,
+  );
+  if (!needsBackfill) {
+    return syncContext;
+  }
+
+  const clients = await nodeAgent.listClients();
+  const nodePeers = clients.flatMap((client) =>
+    client.peers
+      .filter((peer) => peer.protocol === "amneziawg3" || peer.protocol === "awg3")
+      .map((peer) => ({ nodeLabel: client.username, peer })),
+  );
+  const unmatchedPeerIndexes = new Set<number>(nodePeers.map((_, idx) => idx));
+  const hydratedPublicKeys = new Set(
+    syncContext.keys
+      .filter((key) => key.protocol === "awg3" && key.tunnelIpv4 && key.publicKey)
+      .map((key) => key.publicKey!),
+  );
+  for (const idx of [...unmatchedPeerIndexes]) {
+    const peerId = nodePeers[idx]?.peer.id;
+    if (peerId && hydratedPublicKeys.has(peerId)) {
+      unmatchedPeerIndexes.delete(idx);
+    }
+  }
+  const backfills: Array<{ keyId: string; tunnelIpv4: string }> = [];
+  const backfillByKeyId = new Map<string, string>();
+
+  // Match publicKey first so keys sharing a label never resolve to the wrong peer.
+  for (const key of syncContext.keys) {
+    if (
+      key.protocol !== "awg3" ||
+      (key.state !== "active" && key.state !== "disabled") ||
+      key.tunnelIpv4 ||
+      !key.publicKey
+    ) {
+      continue;
+    }
+    let matchedIndex = -1;
+    for (const idx of unmatchedPeerIndexes) {
+      if (nodePeers[idx]?.peer.id === key.publicKey) {
+        matchedIndex = idx;
+        break;
+      }
+    }
+    if (matchedIndex === -1) continue;
+    unmatchedPeerIndexes.delete(matchedIndex);
+    const matched = nodePeers[matchedIndex];
+    if (!matched) continue;
+    const ipv4 = extractPeerIpv4(matched.peer.allowedIps);
+    if (ipv4) {
+      backfills.push({ keyId: key.keyId, tunnelIpv4: ipv4 });
+      backfillByKeyId.set(key.keyId, ipv4);
+    }
+  }
+
+  // Fallback to nodeLabel only for legacy rows that lack persisted publicKey.
+  for (const key of syncContext.keys) {
+    if (
+      key.protocol !== "awg3" ||
+      (key.state !== "active" && key.state !== "disabled") ||
+      key.tunnelIpv4 ||
+      backfillByKeyId.has(key.keyId) ||
+      !key.nodeLabel
+    ) {
+      continue;
+    }
+    let matchedIndex = -1;
+    for (const idx of unmatchedPeerIndexes) {
+      if (nodePeers[idx]?.nodeLabel === key.nodeLabel) {
+        matchedIndex = idx;
+        break;
+      }
+    }
+    if (matchedIndex === -1) continue;
+    unmatchedPeerIndexes.delete(matchedIndex);
+    const matched = nodePeers[matchedIndex];
+    if (!matched) continue;
+    const ipv4 = extractPeerIpv4(matched.peer.allowedIps);
+    if (ipv4) {
+      backfills.push({ keyId: key.keyId, tunnelIpv4: ipv4 });
+      backfillByKeyId.set(key.keyId, ipv4);
+    }
+  }
+
+  if (backfills.length === 0) {
+    return syncContext;
+  }
+
+  await repository.backfillKeyTunnelIpv4s?.(backfills, observedAt);
+  return {
+    ...syncContext,
+    keys: syncContext.keys.map((key) => {
+      const hydrated = backfillByKeyId.get(key.keyId);
+      return hydrated ? { ...key, tunnelIpv4: hydrated } : key;
+    }),
+  };
+};
 
 export const createJobProcessor = ({
   repository,
@@ -375,12 +504,20 @@ export const createJobProcessor = ({
       const missingManagedPeerCount = context.keys.filter(
         (key) => key.state !== "revoking" && !matchedPeerByKeyId.has(key.keyId),
       ).length;
+      const tunnelIpv4Backfills = context.keys.flatMap((key) => {
+        if (key.protocol !== "awg3" || key.tunnelIpv4) return [];
+        const matched = matchedPeerByKeyId.get(key.keyId);
+        if (!matched) return [];
+        const ip = extractPeerIpv4(matched.peer.allowedIps);
+        return ip ? [{ keyId: key.keyId, tunnelIpv4: ip }] : [];
+      });
       await repository.completeNodeReconcile({
         jobId: job.id,
         nodeId,
         observedAt,
         managedKeyIds: context.keys.map((key) => key.keyId),
         peers,
+        ...(tunnelIpv4Backfills.length > 0 ? { tunnelIpv4Backfills } : {}),
         summary: {
           managedKeyCount: context.keys.length,
           observedPeerCount: nodePeers.length,
@@ -489,6 +626,97 @@ export const createJobProcessor = ({
       });
       return;
     }
+    if (job.type === NODE_SYNC_EGRESS_JOB_TYPE) {
+      const { nodeId } = nodeJobPayloadSchema.parse(job.payload);
+      if (!repository.loadNodeEgressSyncContext) {
+        await repository.completeJob(job.id);
+        return;
+      }
+      const rawSyncContext = await repository.loadNodeEgressSyncContext(nodeId);
+      if (!rawSyncContext) {
+        await repository.failJob(job.id, "Node egress sync target not found");
+        return;
+      }
+      const nodeAgent = createNodeAgent(rawSyncContext.node);
+      const syncContext = await hydrateMissingTunnelIpv4s(
+        rawSyncContext,
+        nodeAgent,
+        repository,
+        now(),
+      );
+      const desired = buildNodeEgressDesiredState(syncContext);
+      const outcome = await nodeAgent.putServerEgress(desired);
+      const observedAt = now();
+      if (outcome === null) {
+        await repository.markNodeEgressUnavailable?.(nodeId, observedAt);
+      } else {
+        await repository.mirrorNodeEgressReport?.(nodeId, outcome.report, observedAt);
+      }
+      await repository.completeJob(job.id);
+      return;
+    }
+    if (job.type === NODE_SWITCH_EGRESS_MODE_JOB_TYPE) {
+      const { nodeId, mode, previousMode } = nodeSwitchEgressModePayloadSchema.parse(job.payload);
+      if (!repository.loadNodeEgressSyncContext || !repository.completeNodeEgressModeSwitch) {
+        await repository.failJob(job.id, "Node egress mode switch repository is not wired");
+        return;
+      }
+      const rawSyncContext = await repository.loadNodeEgressSyncContext(nodeId);
+      if (!rawSyncContext) {
+        await repository.failJob(job.id, "Node egress mode switch target not found");
+        return;
+      }
+      const nodeAgent = createNodeAgent(rawSyncContext.node);
+      if (mode === "routed") {
+        // Pre-0072 legacy AWG 3.1 keys have tunnelIpv4 === null until backfilled from live node peers.
+        // Hydrate them before pushing desired state so fail-closed rules never drop live clients at cutover.
+        const syncContext = await hydrateMissingTunnelIpv4s(
+          rawSyncContext,
+          nodeAgent,
+          repository,
+          now(),
+        );
+        const prewarm = await nodeAgent.putServerEgress(buildNodeEgressDesiredState(syncContext));
+        if (prewarm === null) {
+          await repository.completeNodeEgressModeSwitch({
+            jobId: job.id,
+            nodeId,
+            mode,
+            ...(previousMode ? { previousMode } : {}),
+            state: "failed",
+            message: "node-agent does not serve /server/egress",
+            observedAt: now(),
+          });
+          return;
+        }
+      }
+      const switched = await nodeAgent.switchEgressMode(mode);
+      const observedAt = now();
+      if (!switched.ok) {
+        await repository.completeNodeEgressModeSwitch({
+          jobId: job.id,
+          nodeId,
+          mode,
+          ...(previousMode ? { previousMode } : {}),
+          state: "failed",
+          message: switched.error ?? "Host egress mode switch failed",
+          report: switched.report ?? null,
+          observedAt,
+        });
+        return;
+      }
+      await repository.completeNodeEgressModeSwitch({
+        jobId: job.id,
+        nodeId,
+        mode,
+        ...(previousMode ? { previousMode } : {}),
+        state: "idle",
+        message: null,
+        report: switched.report ?? null,
+        observedAt,
+      });
+      return;
+    }
     if (!job.type.startsWith("vpn-key.")) {
       await repository.completeJob(job.id);
       return;
@@ -515,12 +743,16 @@ export const createJobProcessor = ({
         const created = await agent.createClient(
           context.nodeLabel,
           context.protocol,
+          ...(context.egressHint ? [context.egressHint] : []),
         );
+        const tunnelIpv4 =
+          context.protocol === "awg3" ? tryExtractBaseClientIpv4(created.config) : null;
         await repository.completeProvision({
           jobId: job.id,
           keyId,
           publicKey: created.id,
           vpnConfig: created.config,
+          ...(context.protocol === "awg3" ? { tunnelIpv4 } : {}),
         });
       } catch (error) {
         const reason = error instanceof Error ? error.message : "Unknown node error";
@@ -541,17 +773,35 @@ export const createJobProcessor = ({
         context.publicKey ??
         findPeer(await agent.listClients(), context.nodeLabel)?.id ??
         null;
-      if (oldPeer) await agent.deleteClient(oldPeer, context.protocol);
-      const created = await agent.createClient(
-        context.nodeLabel,
-        context.protocol,
-      );
-      await repository.completeProvision({
-        jobId: job.id,
-        keyId,
-        publicKey: created.id,
-        vpnConfig: created.config,
-      });
+      if (oldPeer) {
+        try {
+          await agent.deleteClient(oldPeer, context.protocol);
+        } catch (error) {
+          if (!(error instanceof Error && /status 404/.test(error.message))) {
+            throw error;
+          }
+        }
+      }
+      try {
+        const created = await agent.createClient(
+          context.nodeLabel,
+          context.protocol,
+          ...(context.egressHint ? [context.egressHint] : []),
+        );
+        const tunnelIpv4 =
+          context.protocol === "awg3" ? tryExtractBaseClientIpv4(created.config) : null;
+        await repository.completeProvision({
+          jobId: job.id,
+          keyId,
+          publicKey: created.id,
+          vpnConfig: created.config,
+          ...(context.protocol === "awg3" ? { tunnelIpv4 } : {}),
+        });
+      } catch (error) {
+        const reason = error instanceof Error ? error.message : "Unknown node error";
+        await reconcileOrphan(context, agent, reason);
+        throw error instanceof Error ? error : new Error(reason);
+      }
       return;
     }
 
@@ -591,6 +841,7 @@ export const createJobProcessor = ({
         context.publicKey,
         context.protocol,
         enabled ? "active" : "disabled",
+        ...(enabled && context.egressHint ? [context.egressHint] : []),
       );
       await repository.completeLifecycle(
         job.id,

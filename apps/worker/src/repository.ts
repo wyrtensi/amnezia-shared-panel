@@ -1,10 +1,15 @@
 import type {
+  HostNetworkReport,
   KeyState,
+  NodeEgressMode,
+  NodeEgressModeState,
   NodeIpv6RejectStubState,
   ProtocolKind,
 } from "@amnezia/contracts";
 import type { AccessSyncArmReason } from "@amnezia/db";
 import type { PeerObservation } from "./telemetry.js";
+import type { NodeClientEgressHint } from "./nodeAgent.js";
+import type { BuildNodeEgressStateInput } from "./nodeEgress.js";
 
 export type { AccessSyncArmReason };
 
@@ -21,6 +26,8 @@ export type WorkerKeyContext = {
   nodeLabel: string;
   protocol: ProtocolKind;
   publicKey: string | null;
+  tunnelIpv4?: string | null;
+  egressHint?: NodeClientEgressHint | null;
   node: {
     id: string;
     baseUrl: string;
@@ -35,6 +42,8 @@ export type NodeReconcileContext = {
     nodeLabel: string;
     publicKey: string | null;
     state: KeyState;
+    protocol?: ProtocolKind;
+    tunnelIpv4?: string | null;
   }>;
 };
 
@@ -65,7 +74,27 @@ export type NodeReconcileResult = {
   observedAt: Date;
   managedKeyIds: string[];
   peers: PeerObservation[];
+  tunnelIpv4Backfills?: Array<{ keyId: string; tunnelIpv4: string }>;
   summary: NodeReconcileSummary;
+};
+
+export type NodeEgressSyncContext = BuildNodeEgressStateInput & {
+  node: BuildNodeEgressStateInput["node"] & {
+    baseUrl: string;
+    apiKey: string;
+    egressMode: NodeEgressMode;
+  };
+};
+
+export type NodeEgressModeSwitchResult = {
+  jobId: string;
+  nodeId: string;
+  mode: NodeEgressMode;
+  previousMode?: NodeEgressMode;
+  state: NodeEgressModeState;
+  message: string | null;
+  report?: HostNetworkReport | null;
+  observedAt: Date;
 };
 
 export type NodeAgentUpdateRequested = {
@@ -175,6 +204,22 @@ export interface WorkerRepository {
   completeNodeIpv6RejectStub: (
     result: NodeIpv6RejectStubApplied,
   ) => Promise<void>;
+  loadNodeEgressSyncContext?: (
+    nodeId: string,
+  ) => Promise<NodeEgressSyncContext | null>;
+  backfillKeyTunnelIpv4s?: (
+    backfills: Array<{ keyId: string; tunnelIpv4: string }>,
+    observedAt: Date,
+  ) => Promise<void>;
+  mirrorNodeEgressReport?: (
+    nodeId: string,
+    report: HostNetworkReport,
+    observedAt: Date,
+  ) => Promise<void>;
+  markNodeEgressUnavailable?: (nodeId: string, observedAt: Date) => Promise<void>;
+  completeNodeEgressModeSwitch?: (
+    result: NodeEgressModeSwitchResult,
+  ) => Promise<void>;
   /** Store the release the panel currently offers nodes, keyed by repository. */
   saveNodeAgentRelease: (release: {
     repository: string;
@@ -194,6 +239,7 @@ export interface WorkerRepository {
     keyId: string;
     publicKey: string;
     vpnConfig: string;
+    tunnelIpv4?: string | null;
   }) => Promise<void>;
   completeLifecycle: (
     jobId: string,

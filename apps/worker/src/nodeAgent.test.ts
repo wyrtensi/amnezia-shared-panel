@@ -187,4 +187,112 @@ describe("node-agent client", () => {
       ).rejects.toThrow();
     });
   });
+
+  describe("multi-exit egress methods and client hints", () => {
+    const sampleReport = {
+      daemonVersion: "1.0.0",
+      observedMode: "routed" as const,
+      egressState: "routed_active" as const,
+      bridgeName: "br-awg-egress",
+      bridgePresent: true,
+      tunnelSubnetConflict: false,
+      ipv4Addresses: [],
+      exits: [],
+      observedAt: "2026-11-25T10:00:00.000Z",
+    };
+
+    it("parses server egressReport and sends egress hint on createClient/setClientStatus/runChecks", async () => {
+      const calls: Array<{ url: string; init?: RequestInit }> = [];
+      const client = createNodeAgentClient({
+        baseUrl: "http://127.0.0.1:4001",
+        apiKey: "private-api-key",
+        fetchImpl: vi.fn<typeof fetch>((url, init) => {
+          const urlStr = typeof url === "string" ? url : url instanceof URL ? url.toString() : url.url;
+          calls.push({ url: urlStr, init });
+          if (urlStr.endsWith("/server")) {
+            return Promise.resolve(
+              new Response(
+                JSON.stringify({
+                  id: "n1",
+                  region: "eu",
+                  weight: 1,
+                  maxPeers: 100,
+                  totalPeers: 1,
+                  protocols: ["amneziawg3"],
+                  egressReport: sampleReport,
+                }),
+                { status: 200 },
+              ),
+            );
+          }
+          if (urlStr.endsWith("/clients")) {
+            return Promise.resolve(
+              new Response(
+                JSON.stringify({
+                  client: { id: "pk-1", config: "vpn://abc", protocol: "amneziawg3" },
+                }),
+                { status: 200 },
+              ),
+            );
+          }
+          if (urlStr.endsWith("/checks/run")) {
+            return Promise.resolve(new Response(JSON.stringify({ results: [] }), { status: 200 }));
+          }
+          return Promise.resolve(new Response(JSON.stringify({ ok: true, report: sampleReport }), { status: 200 }));
+        }),
+      });
+
+      const server = await client.getServer();
+      expect(server.egressReport?.observedMode).toBe("routed");
+
+      await client.createClient("lbl", "awg3", { exitIp: "1.1.1.1", dnsPrimary: "9.9.9.9" });
+      expect(JSON.parse(calls[1]!.init?.body as string)).toMatchObject({
+        clientName: "lbl",
+        protocol: "amneziawg3",
+        egress: { exitIp: "1.1.1.1", dnsPrimary: "9.9.9.9" },
+      });
+
+      await client.setClientStatus("pk-1", "awg3", "active", { exitIp: "1.1.1.1" });
+      expect(JSON.parse(calls[2]!.init?.body as string)).toMatchObject({
+        clientId: "pk-1",
+        status: "active",
+        egress: { exitIp: "1.1.1.1" },
+      });
+
+      await client.runChecks([], { egressIpv4: "1.1.1.1" });
+      await client.runChecks([{ id: "c1", probe: {}, assertions: [] }], { egressIpv4: "1.1.1.1" });
+      expect(JSON.parse(calls[3]!.init?.body as string)).toMatchObject({ egressIpv4: "1.1.1.1" });
+    });
+
+    it("putServerEgress handles 404 for legacy agents and switchEgressMode surfaces 409 error cleanly", async () => {
+      const legacyClient = createNodeAgentClient({
+        baseUrl: "http://127.0.0.1:4001",
+        apiKey: "private-api-key",
+        fetchImpl: vi.fn<typeof fetch>(() => Promise.resolve(new Response(null, { status: 404 }))),
+      });
+      await expect(
+        legacyClient.putServerEgress({
+          schemaVersion: 1,
+          blockSmtp: true,
+          isolatePrivate: true,
+          exits: [],
+          peers: [],
+        }),
+      ).resolves.toBeNull();
+
+      const conflictClient = createNodeAgentClient({
+        baseUrl: "http://127.0.0.1:4001",
+        apiKey: "private-api-key",
+        fetchImpl: vi.fn<typeof fetch>(() =>
+          Promise.resolve(
+            new Response(JSON.stringify({ message: "Subnet conflict" }), { status: 409 }),
+          ),
+        ),
+      });
+      await expect(conflictClient.switchEgressMode("routed")).resolves.toEqual({
+        ok: false,
+        error: "Subnet conflict",
+      });
+    });
+  });
 });

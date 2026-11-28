@@ -1,6 +1,7 @@
 import { PeerStatus } from "@/types/clients";
 import { SwaggerContract } from "@/contracts/swagger";
 import { Protocol, AppFastifySchema } from "@/types/shared";
+import { IPV4_PATTERN } from "@/schemas/server/egress.schema";
 import { clientIdSchema, protocolSchema } from "./common.schema";
 
 export const updateClientSchema = {
@@ -15,6 +16,9 @@ export const updateClientSchema = {
       },
       {
         required: ["status"],
+      },
+      {
+        required: ["egress"],
       },
     ],
     properties: {
@@ -34,6 +38,20 @@ export const updateClientSchema = {
         description: "Статус ключа",
         enum: Object.values(PeerStatus),
         example: PeerStatus.Active,
+      },
+      egress: {
+        type: "object",
+        additionalProperties: false,
+        required: ["exitIp"],
+        description:
+          "Optional AWG 3.1 multi-exit routing hint synced to amnezia-egressd",
+        properties: {
+          exitIp: { type: "string", pattern: IPV4_PATTERN },
+          dnsPrimary: { type: "string", pattern: IPV4_PATTERN },
+          amneziaDnsDnat: { type: "boolean" },
+          enforceDnsDnat: { type: "boolean" },
+          routingTableId: { type: "integer", minimum: 200, maximum: 219 },
+        },
       },
     },
   },

@@ -757,3 +757,163 @@ describe("checksForNode", () => {
     expect(agent.runChecks).not.toHaveBeenCalled();
   });
 });
+
+describe("multi-exit telemetry and per-exit service checks", () => {
+  it("runs due service checks per active exit IP on routed nodes", async () => {
+    const check = {
+      id: "check-1",
+      name: "Flow",
+      probe: { kind: "http", url: "https://labs.google/fx/tools/flow/" },
+      assertions: [{ type: "statusIn", statuses: [200] }],
+      intervalSec: 43_200,
+      enabled: true,
+      nextDueAt: null,
+    };
+    const agent = {
+      ...stubAgent(),
+      runChecks: vi.fn((_checks, options?: { egressIpv4?: string }) =>
+        Promise.resolve([
+          {
+            id: "check-1",
+            status: options?.egressIpv4 === "198.51.100.20" ? ("failed" as const) : ("ok" as const),
+            httpStatus: 200,
+            latencyMs: 90,
+            finalUrl: "https://labs.google/",
+            detail: options?.egressIpv4 === "198.51.100.20" ? "blocked" : null,
+          },
+        ]),
+      ),
+    };
+    const repository = {
+      ...stubRepository([
+        {
+          ...telemetryNode,
+          egressMode: "routed" as const,
+          activeExitIps: [
+            { id: "exit-1", ipv4: "198.51.100.10" },
+            { id: "exit-2", ipv4: "198.51.100.20" },
+          ],
+        },
+      ]),
+      listServiceChecks: vi.fn(() =>
+        Promise.resolve({
+          checks: [check as never],
+          previousByNode: new Map(),
+          previousByEgressIp: new Map([
+            [
+              "exit-1",
+              new Map([
+                [
+                  "check-1",
+                  {
+                    status: "ok" as const,
+                    checkedAt: new Date(observedAt.getTime() - 60_000),
+                    failingSince: null,
+                  },
+                ],
+              ]),
+            ],
+          ]),
+        }),
+      ),
+      recordServiceCheckResults: vi.fn(() => Promise.resolve()),
+      recordEgressServiceCheckResults: vi.fn(() => Promise.resolve()),
+    };
+
+    await createTelemetryPoller({
+      repository,
+      createNodeAgent: () => agent,
+      now: () => observedAt,
+    })();
+
+    // Node-level aggregated check still runs without egressIpv4, plus exit-2 (due) while exit-1 is skipped (fresh).
+    expect(agent.runChecks).toHaveBeenCalledTimes(2);
+    expect(agent.runChecks).toHaveBeenNthCalledWith(1, [
+      { id: check.id, probe: check.probe, assertions: check.assertions },
+    ]);
+    expect(agent.runChecks).toHaveBeenNthCalledWith(
+      2,
+      [{ id: check.id, probe: check.probe, assertions: check.assertions }],
+      { egressIpv4: "198.51.100.20" },
+    );
+    expect(repository.recordEgressServiceCheckResults).toHaveBeenCalledWith([
+      expect.objectContaining({
+        egressIpId: "exit-2",
+        checkId: "check-1",
+        status: "failed",
+        failingSince: observedAt,
+      }),
+    ]);
+  });
+
+  it("runs per-exit checks with bounded concurrency and stops queued exits when budget expires", async () => {
+    const check = {
+      id: "check-1",
+      name: "Flow",
+      probe: { kind: "http", url: "https://labs.google/fx/tools/flow/" },
+      assertions: [{ type: "statusIn", statuses: [200] }],
+      intervalSec: 43_200,
+      enabled: true,
+      nextDueAt: null,
+    };
+    let activeExits = 0;
+    let maxConcurrentExits = 0;
+    const resolvers: Array<() => void> = [];
+    const agent = {
+      ...stubAgent(),
+      runChecks: vi.fn(async (_checks, options?: { egressIpv4?: string }) => {
+        if (!options?.egressIpv4) {
+          return [{ id: "check-1", status: "ok" as const, httpStatus: 200, latencyMs: 10, detail: null }];
+        }
+        activeExits += 1;
+        maxConcurrentExits = Math.max(maxConcurrentExits, activeExits);
+        await new Promise<void>((resolve) => {
+          resolvers.push(resolve);
+          if (options.egressIpv4 !== "198.51.100.14") {
+            setTimeout(() => {
+              activeExits -= 1;
+              resolve();
+            }, 15);
+          }
+        });
+        return [{ id: "check-1", status: "ok" as const, httpStatus: 200, latencyMs: 15, detail: null }];
+      }),
+    };
+    const exits = Array.from({ length: 5 }, (_, i) => ({
+      id: `exit-${i}`,
+      ipv4: `198.51.100.${10 + i}`,
+    }));
+    const repository = {
+      ...stubRepository([
+        {
+          ...telemetryNode,
+          egressMode: "routed" as const,
+          activeExitIps: exits,
+        },
+      ]),
+      listServiceChecks: vi.fn(() =>
+        Promise.resolve({
+          checks: [check as never],
+          previousByNode: new Map(),
+          previousByEgressIp: new Map(),
+        }),
+      ),
+      recordServiceCheckResults: vi.fn(() => Promise.resolve()),
+      recordEgressServiceCheckResults: vi.fn(() => Promise.resolve()),
+    };
+
+    await createTelemetryPoller({
+      repository,
+      createNodeAgent: () => agent,
+      now: () => observedAt,
+      exitCheckConcurrency: 3,
+      exitChecksBudgetMs: 80,
+    })();
+
+    // Resolve any stalled exit promise cleanly after budget expiry.
+    for (const r of resolvers) r();
+    expect(maxConcurrentExits).toBeLessThanOrEqual(3);
+    expect(maxConcurrentExits).toBeGreaterThanOrEqual(2);
+    expect(repository.recordNodeFailure).not.toHaveBeenCalled();
+  });
+});

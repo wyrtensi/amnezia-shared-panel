@@ -7,7 +7,7 @@ import {
   isDockerDaemonUnavailableError,
   isDockerContainerUnavailableError,
 } from "@/utils/dockerErrors";
-import { exec } from "child_process";
+import { exec, execFile } from "child_process";
 import { APIError } from "@/utils/APIError";
 import { AppContract } from "@/contracts/app";
 import { CommandResult } from "@/types/shared";
@@ -22,32 +22,25 @@ import { runWithInput as runCommandWithInput } from "@/utils/execWithInput";
 import { redactCommand } from "@/utils/redactCommand";
 
 /**
- * Создать соединение с AmneziaWG 2.0
+ * Connection to the AmneziaWG 2.0 container.
  */
 export class AmneziaWg2Connection implements IAmneziaConnection {
   static key = "amneziaWg2";
 
   /**
-   * Построить команду
-   */
-  private buildCommand(cmd: string): string {
-    if (!AppContract.AmneziaWG2.DOCKER_CONTAINER) return cmd;
-
-    return `docker exec ${
-      AppContract.AmneziaWG2.DOCKER_CONTAINER
-    } sh -lc '${cmd.replace(/'/g, "'\\''")}'`;
-  }
-
-  /**
-   * Выполнить команду
+   * Execute a command inside the container (or on the host when unconfigured).
    */
   run(cmd: string, options?: RunOptions): Promise<CommandResult> {
-    const finalCmd = this.buildCommand(cmd);
     const timeout = options?.timeout ?? 5 * TimeContract.SECOND;
     const maxBuffer = options?.maxBufferBytes ?? 10 * 1024 * 1024;
+    const container = AppContract.AmneziaWG2.DOCKER_CONTAINER;
 
     return new Promise((resolve, reject) => {
-      exec(finalCmd, { timeout, maxBuffer }, (error, stdout, stderr) => {
+      const handleResult = (
+        error: Error | null,
+        stdout: string,
+        stderr: string,
+      ) => {
         if (error) {
           if (isDockerDaemonUnavailableError(error)) {
             return reject(
@@ -73,7 +66,19 @@ export class AmneziaWg2Connection implements IAmneziaConnection {
         }
 
         resolve({ stdout, stderr });
-      });
+      };
+
+      // Avoid spawning an intermediate /bin/sh for docker exec so timeout kills docker directly.
+      if (container) {
+        execFile(
+          "docker",
+          ["exec", container, "sh", "-lc", cmd],
+          { timeout, maxBuffer },
+          handleResult,
+        );
+      } else {
+        exec(cmd, { timeout, maxBuffer }, handleResult);
+      }
     });
   }
 

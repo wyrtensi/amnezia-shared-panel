@@ -344,3 +344,120 @@ describe("toKeyView nodeReachability", () => {
     expect("nodeReachability" in withReachability()).toBe(false);
   });
 });
+
+describe("egress info on the owner-facing key payload", () => {
+  const sampleEgress = {
+    effectiveExitIp: "1.1.1.1",
+    exitLabel: "Clean Exit",
+    dnsPrimary: "9.9.9.9",
+    dnsSecondary: null,
+    mode: "routed" as const,
+  };
+
+  it("omits egress metadata for regular users even on their own key", () => {
+    const payload = toKeyView({
+      actor: owner,
+      key: row({ endpointId: "ep-1" }),
+      node: NODE,
+      current: null,
+      policy: defaultPortalPolicy,
+      activeByProfile: new Map(),
+      egress: sampleEgress,
+    });
+    expect(payload.endpointId).toBe("ep-1");
+    expect(Object.hasOwn(payload, "egress")).toBe(false);
+    expect(JSON.stringify(payload)).not.toContain("1.1.1.1");
+  });
+
+  it("omits egress metadata for another admin", () => {
+    const payload = toKeyView({
+      actor: otherAdmin,
+      key: row(),
+      node: NODE,
+      current: null,
+      policy: defaultPortalPolicy,
+      activeByProfile: new Map(),
+      egress: sampleEgress,
+    });
+    expect(Object.hasOwn(payload, "egress")).toBe(false);
+  });
+
+  it("exposes egress metadata to an admin viewing their own key", () => {
+    const payload = toKeyView({
+      actor: adminOwner,
+      key: row(),
+      node: NODE,
+      current: null,
+      policy: defaultPortalPolicy,
+      activeByProfile: new Map(),
+      egress: sampleEgress,
+    });
+    expect(payload.egress).toEqual(sampleEgress);
+  });
+});
+
+describe("manual server-change update notice on owner-facing key payload", () => {
+  it("picks the newest notice across node, egress IP, and endpoint for active keys", () => {
+    const payload = toKeyView({
+      actor: owner,
+      key: row({ createdAt: new Date("2026-11-01T00:00:00.000Z") }),
+      node: NODE,
+      current: null,
+      policy: defaultPortalPolicy,
+      activeByProfile: new Map(),
+      serverUpdateCandidates: [
+        { scope: "node", notifiedAt: new Date("2026-11-10T00:00:00.000Z"), note: "Node reboot" },
+        {
+          scope: "exit",
+          notifiedAt: new Date("2026-11-20T00:00:00.000Z"),
+          note: "Updated DNS settings",
+        },
+        { scope: "endpoint", notifiedAt: new Date("2026-11-15T00:00:00.000Z"), note: null },
+      ],
+    });
+    expect(payload.serverUpdate).toEqual({
+      scope: "exit",
+      notifiedAt: "2026-11-20T00:00:00.000Z",
+      note: "Updated DNS settings",
+    });
+  });
+
+  it("clears once owner delivers config after notifiedAt and ignores keys created after notifiedAt", () => {
+    const notifiedAt = new Date("2026-11-20T00:00:00.000Z");
+    const deliveredAfter = toKeyView({
+      actor: owner,
+      key: row({
+        createdAt: new Date("2026-11-01T00:00:00.000Z"),
+        configDeliveredAt: new Date("2026-11-20T00:05:00.000Z"),
+      }),
+      node: NODE,
+      current: null,
+      policy: defaultPortalPolicy,
+      activeByProfile: new Map(),
+      serverUpdateCandidates: [{ scope: "node", notifiedAt, note: null }],
+    });
+    expect(deliveredAfter.serverUpdate).toBeUndefined();
+
+    const createdAfter = toKeyView({
+      actor: owner,
+      key: row({ createdAt: new Date("2026-11-21T00:00:00.000Z") }),
+      node: NODE,
+      current: null,
+      policy: defaultPortalPolicy,
+      activeByProfile: new Map(),
+      serverUpdateCandidates: [{ scope: "node", notifiedAt, note: null }],
+    });
+    expect(createdAfter.serverUpdate).toBeUndefined();
+
+    const revoked = toKeyView({
+      actor: owner,
+      key: row({ state: "revoked", createdAt: new Date("2026-11-01T00:00:00.000Z") }),
+      node: NODE,
+      current: null,
+      policy: defaultPortalPolicy,
+      activeByProfile: new Map(),
+      serverUpdateCandidates: [{ scope: "node", notifiedAt, note: null }],
+    });
+    expect(revoked.serverUpdate).toBeUndefined();
+  });
+});

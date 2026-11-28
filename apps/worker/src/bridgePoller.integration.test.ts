@@ -137,6 +137,7 @@ describe("bridge-agent poller (real PostgreSQL, fake bridge-agent over HTTP)", (
             createdBridgeIds.map((id) => bridgeAgentPollDeduplicationKey(id)),
           ),
           ...createdBridgeIds.map((id) => like(jobOutbox.deduplicationKey, `notify.reachability:bridge-%:${id}:%`)),
+          like(jobOutbox.type, "notify.reachability%"),
         ));
       await database.db
         .delete(vpnBridgeRoutes)

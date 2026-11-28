@@ -4,6 +4,7 @@ import { isAbsolute } from "node:path";
 
 import type { AppliedPorts } from "./types.js";
 import { REPOSITORY, spoolOf, type UpdateSpool } from "./update.js";
+import { DEFAULT_WYTUNNEL_RUN_DIR, DEFAULT_WYTUNNEL_TIMEOUT_MS } from "./wytunnel.js";
 
 export const MIN_TOKEN_LENGTH = 32;
 export const DEFAULT_LISTEN = "127.0.0.1:7600";
@@ -20,12 +21,17 @@ export type Config = {
   listen: { host: string; port: number };
   apiToken: string;
   tokenFile: string;
+  /** Null when BRIDGE_FRPS_ENABLED=false on a WyTunnel-only bridge (0 frps overhead). */
   frps: {
     baseUrl: string;
     user: string;
     password: string;
     timeoutMs: number;
     maxBytes: number;
+  } | null;
+  wytunnel: {
+    runDir: string;
+    timeoutMs: number;
   };
   applied: AppliedPorts;
   /** Null when no approved repository is configured: no `update.v1`, no `/v1/update`. */
@@ -171,22 +177,41 @@ export const loadConfig = (env: NodeJS.ProcessEnv): Config => {
   }
 
   const listen = parseListen(env.BRIDGE_AGENT_LISTEN);
-  const baseUrl = parseFrpsUrl(env.BRIDGE_FRPS_URL);
   const apiToken = loadApiToken(tokenFile);
-  const credentials = loadDashboardCredentials(
-    env.BRIDGE_FRPS_DASHBOARD_ENV_FILE?.trim() || DEFAULT_DASHBOARD_ENV_FILE,
-  );
+  const frpsEnabledRaw = env.BRIDGE_FRPS_ENABLED?.trim().toLowerCase();
+  if (frpsEnabledRaw && frpsEnabledRaw !== "true" && frpsEnabledRaw !== "false") {
+    throw new Error("BRIDGE_FRPS_ENABLED must be true or false");
+  }
+  const frpsEnabled = frpsEnabledRaw !== "false";
+
+  let frps: Config["frps"] = null;
+  if (frpsEnabled) {
+    const baseUrl = parseFrpsUrl(env.BRIDGE_FRPS_URL);
+    const credentials = loadDashboardCredentials(
+      env.BRIDGE_FRPS_DASHBOARD_ENV_FILE?.trim() || DEFAULT_DASHBOARD_ENV_FILE,
+    );
+    frps = {
+      baseUrl,
+      ...credentials,
+      timeoutMs: positiveInt(env, "BRIDGE_FRPS_TIMEOUT_MS", DEFAULT_FRPS_TIMEOUT_MS, 60_000),
+      maxBytes: positiveInt(env, "BRIDGE_FRPS_MAX_BYTES", DEFAULT_FRPS_MAX_BYTES, 16 * 1024 * 1024),
+    };
+  }
+
+  const wytunnelRunDir = env.BRIDGE_WYTUNNEL_RUN_DIR?.trim() || DEFAULT_WYTUNNEL_RUN_DIR;
+  if (!isAbsolute(wytunnelRunDir)) {
+    throw new Error("BRIDGE_WYTUNNEL_RUN_DIR must be an absolute path");
+  }
 
   return {
     bridgeId,
     listen,
     apiToken,
     tokenFile,
-    frps: {
-      baseUrl,
-      ...credentials,
-      timeoutMs: positiveInt(env, "BRIDGE_FRPS_TIMEOUT_MS", DEFAULT_FRPS_TIMEOUT_MS, 60_000),
-      maxBytes: positiveInt(env, "BRIDGE_FRPS_MAX_BYTES", DEFAULT_FRPS_MAX_BYTES, 16 * 1024 * 1024),
+    frps,
+    wytunnel: {
+      runDir: wytunnelRunDir,
+      timeoutMs: positiveInt(env, "BRIDGE_WYTUNNEL_TIMEOUT_MS", DEFAULT_WYTUNNEL_TIMEOUT_MS, 10_000),
     },
     applied,
     update: loadUpdateConfig(env),

@@ -18,6 +18,7 @@
  *    tone-on-tone they had before.
  */
 :root {
+  color-scheme: light;
   --radius: 0.875rem;
 
   /* Painted over --background by the base body rule. Light keeps a flat
@@ -170,11 +171,8 @@
   --header-gradient: linear-gradient(120deg, #cc7328 0%, #17917d 120%);
 }
 
-:root:not([data-theme="light"]) {
-  color-scheme: light;
-}
-
 .dark {
+  color-scheme: dark;
   /* Layered surfaces: canvas (darkest) < card < muted/secondary, with a
      clearly visible warm border so cards never float edgelessly on the bg.
 
@@ -360,6 +358,27 @@
 @layer base {
   * {
     border-color: var(--border);
+    scrollbar-width: thin;
+    scrollbar-color: color-mix(in srgb, var(--muted-foreground) 35%, transparent) transparent;
+  }
+  *::-webkit-scrollbar {
+    width: 8px;
+    height: 8px;
+  }
+  *::-webkit-scrollbar-track {
+    background: transparent;
+  }
+  *::-webkit-scrollbar-thumb {
+    background-color: color-mix(in srgb, var(--muted-foreground) 32%, transparent);
+    border-radius: 9999px;
+    border: 2px solid transparent;
+    background-clip: content-box;
+  }
+  *::-webkit-scrollbar-thumb:hover {
+    background-color: color-mix(in srgb, var(--muted-foreground) 55%, transparent);
+  }
+  *::-webkit-scrollbar-corner {
+    background: transparent;
   }
   body {
     background-color: var(--background);

@@ -304,6 +304,45 @@ export function ServiceChecksCard({
                 ))}
               </ul>
             )}
+
+            {(check.egressResults ?? []).length > 0 ? (
+              <div className="space-y-1 rounded-md border border-border/50 bg-well/60 p-2">
+                <p className="text-[11px] font-medium text-muted-foreground">
+                  {t("checks.byExit")}
+                </p>
+                <ul className="space-y-1">
+                  {(check.egressResults ?? []).map((er) => (
+                    <li
+                      key={`${er.egressIpId}:${check.id}`}
+                      className="flex flex-wrap items-baseline justify-between gap-2 text-xs"
+                    >
+                      <span className="flex items-center gap-1.5">
+                        <span className="text-muted-foreground">
+                          {er.nodeName} · {er.egressLabel ? `${er.egressLabel} (${er.egressIpv4})` : er.egressIpv4}
+                        </span>
+                        <Badge
+                          variant={
+                            er.status === "ok"
+                              ? "success"
+                              : er.status === "failed"
+                                ? "destructive"
+                                : "outline"
+                          }
+                        >
+                          {er.status}
+                        </Badge>
+                      </span>
+                      <span className="min-w-0 truncate text-muted-foreground">
+                        {er.detail ?? er.finalUrl ?? ""}
+                      </span>
+                      <span className="text-muted-foreground">
+                        {formatDateTime(er.checkedAt, lang)}
+                      </span>
+                    </li>
+                  ))}
+                </ul>
+              </div>
+            ) : null}
           </div>
         ))}
       </CardContent>

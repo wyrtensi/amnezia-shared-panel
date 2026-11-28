@@ -2804,4 +2804,215 @@ describe("PostgresReachabilityRepository", () => {
       expect((await repository.loadWidgetSnapshot(staleAt))?.input.stale).toBe(true);
     },
   );
+
+  runDatabaseTest(
+    "routed implicit self-exit endpoints get separate service keys and expected egress IPs",
+    async () => {
+      if (!database || !repository) return;
+      const node = await seedNode("routed-implicit", {
+        egressMode: "routed",
+        egressDefaultIpId: null,
+        publicIp: "192.0.2.10",
+      });
+      const [ep1, ep2] = await database.db
+        .insert(nodeVpnEndpoints)
+        .values([
+          {
+            nodeId: node.id,
+            ordinal: 1,
+            address: "198.51.100.10",
+            entryName: "Entry A",
+            variantOrdinal: 1,
+            name: "Entry A",
+            egressIpId: null,
+            enabled: true,
+            reachabilityEnabled: true,
+          },
+          {
+            nodeId: node.id,
+            ordinal: 2,
+            address: "198.51.100.20",
+            entryName: "Entry B",
+            variantOrdinal: 1,
+            name: "Entry B",
+            egressIpId: null,
+            enabled: true,
+            reachabilityEnabled: true,
+          },
+        ])
+        .returning();
+      expect(ep1).toBeDefined();
+      expect(ep2).toBeDefined();
+
+      const synced = await repository.syncServiceKeys(new Date());
+      expect(synced).toEqual({ created: 2, revoked: 0, provisioning: 2 });
+
+      const config = encryptSecret("vpn://config", keyring, 1);
+      await database.db.update(vpnKeys).set({
+        state: "active",
+        configCiphertext: config.ciphertext,
+        configNonce: config.nonce,
+        configAuthTag: config.authTag,
+        configKeyVersion: config.keyVersion,
+      });
+
+      const targets = await repository.listTargets({ bridgeMeasurement: false });
+      expect(targets.map((t) => t.expectedEgressIp).sort()).toEqual([
+        "198.51.100.10",
+        "198.51.100.20",
+      ]);
+    },
+  );
+});
+
+describe("PostgresWorkerRepository egress mode switch and drift alerts", () => {
+  const database = databaseUrl ? createDatabase(databaseUrl) : null;
+  const keyring = { 1: randomBytes(32) };
+  const repository = database
+    ? new PostgresWorkerRepository({
+        db: database.db,
+        keyring,
+        activeKeyVersion: 1,
+      })
+    : null;
+
+  beforeEach(async () => {
+    if (!database) return;
+    await database.db.delete(auditEvents);
+    await database.db.delete(jobOutbox);
+    await database.db.delete(nodes);
+  });
+
+  afterAll(async () => {
+    if (database) await database.client.end();
+  });
+
+  const seedEgressNode = async (extra: Partial<typeof nodes.$inferInsert> = {}) => {
+    if (!database) throw new Error("disabled");
+    const credentials = encryptSecret("k".repeat(32), keyring, 1);
+    const label = encryptSecret(randomBytes(32).toString("base64"), keyring, 1);
+    const [node] = await database.db
+      .insert(nodes)
+      .values({
+        name: `egress-${randomBytes(3).toString("hex")}`,
+        apiBaseUrl: "http://127.0.0.1:4001",
+        protocol: "awg3",
+        publicIp: "192.0.2.10",
+        credentialsCiphertext: credentials.ciphertext,
+        credentialsNonce: credentials.nonce,
+        credentialsAuthTag: credentials.authTag,
+        credentialsKeyVersion: credentials.keyVersion,
+        labelSecretCiphertext: label.ciphertext,
+        labelSecretNonce: label.nonce,
+        labelSecretAuthTag: label.authTag,
+        labelSecretKeyVersion: label.keyVersion,
+        ...extra,
+      })
+      .returning();
+    if (!node) throw new Error("seed failed");
+    return node;
+  };
+
+  runDatabaseTest("completeNodeEgressModeSwitch preserves previousMode on failure and failJob exits switching", async () => {
+    if (!database || !repository) return;
+    const node = await seedEgressNode({
+      egressMode: "masquerade",
+      egressModeState: "switching",
+    });
+    const [job1] = await database.db
+      .insert(jobOutbox)
+      .values({
+        type: "node.switch-egress-mode",
+        deduplicationKey: `switch:${randomUUID()}`,
+        payload: { nodeId: node.id, mode: "routed", previousMode: "masquerade" },
+      })
+      .returning();
+
+    await repository.completeNodeEgressModeSwitch({
+      jobId: job1!.id,
+      nodeId: node.id,
+      mode: "routed",
+      previousMode: "masquerade",
+      state: "failed",
+      message: "daemon rejected switch",
+      observedAt: new Date("2026-11-26T10:00:00Z"),
+    });
+
+    const [afterCompleteFail] = await database.db.select().from(nodes).where(eq(nodes.id, node.id));
+    expect(afterCompleteFail?.egressMode).toBe("masquerade");
+    expect(afterCompleteFail?.egressModeState).toBe("failed");
+    expect(afterCompleteFail?.egressModeMessage).toBe("daemon rejected switch");
+
+    await database.db
+      .update(nodes)
+      .set({ egressModeState: "switching" })
+      .where(eq(nodes.id, node.id));
+    const [job2] = await database.db
+      .insert(jobOutbox)
+      .values({
+        type: "node.switch-egress-mode",
+        deduplicationKey: `switch:${randomUUID()}`,
+        payload: { nodeId: node.id, mode: "routed", previousMode: "masquerade" },
+      })
+      .returning();
+
+    await repository.failJob(job2!.id, "node unreachable after retries");
+    const [afterFailJob] = await database.db.select().from(nodes).where(eq(nodes.id, node.id));
+    expect(afterFailJob?.egressMode).toBe("masquerade");
+    expect(afterFailJob?.egressModeState).toBe("failed");
+    expect(afterFailJob?.egressModeMessage).toBe("node unreachable after retries");
+  });
+
+  runDatabaseTest("mirrorNodeEgressReport queues a fresh drift alert after recover and re-drift", async () => {
+    if (!database || !repository) return;
+    const node = await seedEgressNode({
+      egressMode: "masquerade",
+      egressDaemonState: "masquerade_ready",
+    });
+    const baseReport = {
+      daemonVersion: "1.2.0",
+      bridgeName: "br-awg-egress",
+      bridgePresent: true,
+      tunnelSubnetConflict: false,
+      ipv4Addresses: [],
+      exits: [],
+    };
+
+    await repository.mirrorNodeEgressReport(
+      node.id,
+      {
+        ...baseReport,
+        observedMode: "routed",
+        egressState: "routed_active",
+        observedAt: "2026-11-26T10:00:00Z",
+      },
+      new Date("2026-11-26T10:00:00Z"),
+    );
+    await repository.mirrorNodeEgressReport(
+      node.id,
+      {
+        ...baseReport,
+        observedMode: "masquerade",
+        egressState: "masquerade_ready",
+        observedAt: "2026-11-26T10:01:00Z",
+      },
+      new Date("2026-11-26T10:01:00Z"),
+    );
+    await repository.mirrorNodeEgressReport(
+      node.id,
+      {
+        ...baseReport,
+        observedMode: "routed",
+        egressState: "routed_active",
+        observedAt: "2026-11-26T10:02:00Z",
+      },
+      new Date("2026-11-26T10:02:00Z"),
+    );
+
+    const alerts = await database.db
+      .select()
+      .from(jobOutbox)
+      .where(eq(jobOutbox.type, "notify.reachability"));
+    expect(alerts).toHaveLength(2);
+  });
 });

@@ -171,6 +171,34 @@ const EXACT: Record<string, { textKey: string; tone: Tone }> = {
     textKey: "audit.exact.admin.nodes.reconcile",
     tone: "neutral",
   },
+  "node.egress_ip_added": {
+    textKey: "audit.exact.node.egress_ip_added",
+    tone: "success",
+  },
+  "node.egress_ip_updated": {
+    textKey: "audit.exact.node.egress_ip_updated",
+    tone: "neutral",
+  },
+  "node.egress_ip_removed": {
+    textKey: "audit.exact.node.egress_ip_removed",
+    tone: "warning",
+  },
+  "node.egress_ip_swapped": {
+    textKey: "audit.exact.node.egress_ip_swapped",
+    tone: "warning",
+  },
+  "node.egress_mode_switch_requested": {
+    textKey: "audit.exact.node.egress_mode_switch_requested",
+    tone: "warning",
+  },
+  "node.egress_mode_adopted": {
+    textKey: "audit.exact.node.egress_mode_adopted",
+    tone: "success",
+  },
+  "vpn_key.endpoint_reassigned": {
+    textKey: "audit.exact.vpn_key.endpoint_reassigned",
+    tone: "neutral",
+  },
 };
 
 const TARGET_TYPE: Record<string, string> = {

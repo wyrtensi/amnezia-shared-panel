@@ -314,9 +314,10 @@ happens — the job fails, the card's state stays where it was and
 there on.
 
 The swap runs on the host (`scripts/agent-update.sh`, a port of the panel's own
-`panel-updater`), recreates **only** the agent container with `--no-deps` so no
-tunnel drops, and rolls back to the previous digest if the new agent fails its
-health gate. On a shared host that `--no-deps` matters twice over — see "Shared
+`panel-updater`), updates or bootstraps the bundled `amnezia-egressd` host
+daemon from the pulled image, and recreates **only** the agent container with
+`--no-deps` so no tunnel drops. If either the new agent or `amnezia-egressd`
+fails its health gate, both roll back to the previous release. On a shared host that `--no-deps` matters twice over — see "Shared
 hosts" above. Details and the failure modes are in
 [`AGENT-HOST-SETUP.md`](./AGENT-HOST-SETUP.md), "Updating a node's agent from the
 panel".

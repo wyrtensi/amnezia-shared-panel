@@ -170,6 +170,7 @@ RestartSec=5
 [Install]
 WantedBy=multi-user.target
 UNITFILE
+chmod 0644 "$UNIT_FILE"
 systemctl daemon-reload
 systemctl enable --now "$UNIT" >/dev/null 2>&1
 systemctl restart "$UNIT"

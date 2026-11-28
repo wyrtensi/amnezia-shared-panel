@@ -15,6 +15,16 @@ on:
   push:
     tags: ["node-agent-v*"]
   workflow_dispatch:
+    inputs:
+      shim_override_mode:
+        description: "Override infra/node/shim-override/shim-override.env mode"
+        required: false
+        default: default
+        type: choice
+        options:
+          - default
+          - override
+          - upstream
 
 concurrency:
   group: release-node-agent-${{ github.ref }}
@@ -67,6 +77,10 @@ jobs:
           # context.
           build-contexts: |
             deploy=infra/node
+            egressd=services/egress-daemon
+          build-args: |
+            APP_VERSION=${{ steps.version.outputs.value }}
+            SHIM_OVERRIDE_MODE=${{ inputs.shim_override_mode == 'override' && 'override' || (inputs.shim_override_mode == 'upstream' && 'upstream' || '') }}
           push: true
           platforms: linux/amd64
           tags: ghcr.io/${{ github.repository }}/node-agent:${{ steps.version.outputs.value }}

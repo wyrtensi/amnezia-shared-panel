@@ -19,6 +19,12 @@ import {
   requestServerCapacitySchema,
   SetServerIpv6RejectStubType,
   setServerIpv6RejectStubSchema,
+  PutServerEgressType,
+  putServerEgressSchema,
+  PostServerEgressVerifyType,
+  postServerEgressVerifySchema,
+  PostServerEgressModeType,
+  postServerEgressModeSchema,
 } from "@/schemas";
 import {
   getServerHandler,
@@ -31,6 +37,9 @@ import {
   getServerCapacityHandler,
   requestServerCapacityHandler,
   setServerIpv6RejectStubHandler,
+  putServerEgressHandler,
+  postServerEgressVerifyHandler,
+  postServerEgressModeHandler,
 } from "@/handlers/server";
 import { authPreHandler } from "@/middleware/auth";
 import { defineController } from "@/helpers/registerControllers";
@@ -148,4 +157,39 @@ export const setServerIpv6RejectStubController =
     schema: setServerIpv6RejectStubSchema,
     preHandler: authPreHandler(),
     handler: setServerIpv6RejectStubHandler,
+  });
+
+/**
+ * Apply desired multi-exit host egress state
+ */
+export const putServerEgressController = defineController<PutServerEgressType>({
+  url: "/server/egress",
+  method: "PUT",
+  schema: putServerEgressSchema,
+  preHandler: authPreHandler(),
+  handler: putServerEgressHandler,
+});
+
+/**
+ * Verify source-bound HTTP egress IP and DNS resolution for an Exit IP
+ */
+export const postServerEgressVerifyController =
+  defineController<PostServerEgressVerifyType>({
+    url: "/server/egress/verify",
+    method: "POST",
+    schema: postServerEgressVerifySchema,
+    preHandler: authPreHandler(),
+    handler: postServerEgressVerifyHandler,
+  });
+
+/**
+ * Atomically switch AWG3 egress mode between masquerade and routed
+ */
+export const postServerEgressModeController =
+  defineController<PostServerEgressModeType>({
+    url: "/server/egress/mode",
+    method: "POST",
+    schema: postServerEgressModeSchema,
+    preHandler: authPreHandler(),
+    handler: postServerEgressModeHandler,
   });

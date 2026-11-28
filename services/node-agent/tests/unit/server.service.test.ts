@@ -16,6 +16,8 @@ import { ServerBackupPayload } from "@/types/server";
 import { AmneziaWgService } from "@/services/amneziaWg";
 import { AmneziaWg2Service } from "@/services/amneziaWg2";
 import { AmneziaWg3Service } from "@/services/amneziaWg3";
+import { EgressService } from "@/services/egress";
+import { DesiredState, HostNetworkReport } from "@/types/egress";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import {
   SUPPORTED_ASSERTION_TYPES,
@@ -301,5 +303,77 @@ describe("ServerService", () => {
     });
     expect(connections.xray.spies.writeServerConfig).not.toHaveBeenCalled();
     expect(connections.xray.spies.restartContainer).not.toHaveBeenCalled();
+  });
+
+  it("includes egressReport, exports egress state, and handles egress import/skipEgress", async () => {
+    const report: HostNetworkReport = {
+      daemonVersion: "1.2.0",
+      observedMode: "routed",
+      egressState: "routed_active",
+      bridgeName: "br-awg-egress",
+      bridgePresent: true,
+      tunnelSubnetConflict: false,
+      ipv4Addresses: [],
+      exits: [],
+      observedAt: "2026-11-25T10:00:00Z",
+    };
+    const desired: DesiredState = {
+      schemaVersion: 1,
+      blockSmtp: true,
+      isolatePrivate: true,
+      exits: [],
+      peers: [],
+    };
+    const egressMock = {
+      getReport: vi.fn(async () => report),
+      getState: vi.fn(async () => desired),
+      applyState: vi.fn(async () => ({ ok: true, warnings: ["w1"], report })),
+    } as unknown as EgressService;
+
+    const amneziaWgConnection = createAmneziaConnectionMock();
+    const amneziaWg2Connection = createAmneziaConnectionMock();
+    const amneziaWg3Connection = createAmneziaConnectionMock();
+    const xrayConnection = createXrayConnectionMock(createXrayServerConfigFixture());
+    const amneziaWgService = new AmneziaWgService(amneziaWgConnection.connection);
+    const amneziaWg2Service = new AmneziaWg2Service(amneziaWg2Connection.connection);
+    const amneziaWg3Service = new AmneziaWg3Service(amneziaWg3Connection.connection);
+    const xrayService = new XrayService(xrayConnection.connection);
+    const clientsService = new ClientsService(
+      xrayService,
+      amneziaWgService,
+      amneziaWg2Service,
+      amneziaWg3Service,
+    );
+    const service = new ServerService(
+      xrayService,
+      clientsService,
+      amneziaWgService,
+      amneziaWg2Service,
+      amneziaWg3Service,
+      egressMock,
+    );
+
+    const status = await service.getServerStatus();
+    expect(status.egressReport).toEqual(report);
+
+    const exported = await service.exportBackup();
+    expect(exported.egress).toEqual(desired);
+
+    await expect(service.importBackup(exported)).resolves.toEqual({
+      egressWarnings: ["w1"],
+    });
+    expect(egressMock.applyState).toHaveBeenCalledWith(desired);
+
+    (egressMock.applyState as ReturnType<typeof vi.fn>).mockClear();
+    await expect(
+      service.importBackup(exported, { skipEgress: true }),
+    ).resolves.toEqual({});
+    expect(egressMock.applyState).not.toHaveBeenCalled();
+
+    const legacy = { ...exported };
+    delete legacy.egress;
+    await expect(service.importBackup(legacy)).resolves.toEqual({
+      egressReconcileRequired: true,
+    });
   });
 });

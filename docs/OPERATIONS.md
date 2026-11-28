@@ -49,6 +49,8 @@ this tree where it is allowed to live.
 | Add or calibrate a service check | [`SERVICE-CHECKS.md`](./SERVICE-CHECKS.md) and [`runbooks/service-check-calibration.md`](./runbooks/service-check-calibration.md) |
 | Configure split-tunneling (`ru_blacklist` E-Core), `global_route_overrides`, `RULE_EXTRA_*` feeds, or Steam split-routing | [`AGENT-HOST-SETUP.md`](./AGENT-HOST-SETUP.md#route-profiles-and-rule-feeds) |
 | Toggle the per-node AWG 3.1 IPv6 active-reject ULA stub (`fd6b:7c2e:4a91:9f::/64`) | [**Per-node AWG 3.1 IPv6 active-reject stub**](#per-node-awg-31-ipv6-active-reject-stub-ula--prohibit-20003) below, [`CLI.md`](./CLI.md) (`node-ipv6-stub`), and [`IPV6-DESIGN.md`](./IPV6-DESIGN.md) |
+| Configure multi-exit routing, Exit IPs, and Entry → Exit variants | [**Multi-exit routing (`egress-daemon`)**](#multi-exit-routing-egress-daemon) below and [`CLI.md`](./CLI.md) (`node-egress*`, `node-exit-*`, `key-reassign-endpoint`) |
+| Deploy, audit, or remove the temporary `containerd-shim-runc-v2` override (`ttrpc#241`) | [`TEMPORARY-SHIM-OVERRIDE.md`](./TEMPORARY-SHIM-OVERRIDE.md) |
 | Deploy, verify, activate, or roll back optional AWG 3.1 node bridges | [`runbooks/AWG-BRIDGES.md`](./runbooks/AWG-BRIDGES.md) and [`infra/bridge/README.md`](../infra/bridge/README.md) |
 | Set up external reachability probing and Telegram alerts / status widget | [`REACHABILITY-PROBE.md`](./REACHABILITY-PROBE.md) |
 
@@ -606,6 +608,62 @@ provides a per-node **IPv6 Reject (ULA)** switch backed by `PUT /api/admin/nodes
     deletes `prohibit 2000::/3` and `<prefix>::1/64`, and writes `ENABLED=0`. Already-imported
     mobile keys continue working over IPv4 without urgent key reissue; all subsequent exports
     return clean IPv4-only configs.
+
+---
+
+## Multi-exit routing (`egress-daemon`)
+
+Nodes running `amnezia-egressd` (`services/egress-daemon`) alongside `node-agent`
+support per-Entry-IP variant routing across multiple public Exit IPs on the same
+host (`routed` mode) while defaulting to backwards-compatible `masquerade`:
+
+- **Modes & safety guards:** `masquerade` uses standard container NAT; `routed`
+  installs dedicated Linux routing tables (`200..219`), per-peer `ip rule`
+  mappings by `tunnel_ipv4`, `SNAT --to-source` rules, per-exit DNS DNAT
+  (`amneziaDnsDnat` / `enforceDnsDnat`), default-on outbound SMTP port `25`
+  blocking (`egressBlockSmtp`, configurable per node in UI and CLI while keeping
+  mail-client ports `465`/`587` open), and default-on private-subnet isolation
+  (`egressIsolatePrivate`, both enforced on the host in `routed` mode).
+- **Bundled `amnezia-egressd` lifecycle & updates:** `amnezia-egressd` is
+  compiled into the `node-agent` image (`/opt/node-agent/bin/amnezia-egressd` +
+  `systemd/amnezia-egressd.service`), runs on the host as a separate root
+  systemd service (`MemoryMax=32M`), and is driven by unprivileged `node-agent`
+  (`uid=10001`, `cap_drop: ALL`) over `/run/amnezia-egress/egressd.sock`
+  (`10001:0`, `0600`). In-panel agent updates (`agent-update.sh`) upgrade or
+  bootstrap `amnezia-egressd` together with `node-agent`, verify `/v1/health`
+  over the Unix socket, preserve active kernel routes across daemon restart
+  (zero tunnel drop), and roll back both components on failure. Note: legacy
+  hosts whose `compose.yaml` predates `/run/amnezia-egress` skip automatic
+  compose replacement and require reconciling `compose.yaml` or running
+  `scripts/install-host-services.sh` so `node-agent` can reach the socket.
+- **Endpoint variants:** each `(node_id, address, egress_ip_id)` variant keeps
+  its own probe verdict and client DNS pair; moving an AWG 3.1 key between
+  variants on the same node (`amnezia-panel key-reassign-endpoint`) keeps
+  its WireGuard keypair and `tunnel_ipv4` unchanged (zero tunnel drop).
+- **Drift recovery & DB restore:** inspect node state with
+  `amnezia-panel node-egress <id>`. When host `observedMode` differs from DB
+  `egressMode` (`modeDrift`, e.g., after restoring an older database dump),
+  either adopt host reality (`amnezia-panel node-egress-adopt <id>`) or
+  explicitly push the desired mode (`amnezia-panel node-egress-mode <id> <masquerade|routed>`).
+
+### Plain-language glossary (modes, terms & knobs)
+
+| Term / setting | What it actually does on the server & for clients |
+| --- | --- |
+| **Masquerade (`masquerade`)** | Default single-exit mode. All VPN traffic leaves through the node's primary IP using NAT (`MASQUERADE`) inside the `amnezia-awg3` container. `amnezia-egressd` keeps no nftables rules or custom routing tables active. |
+| **Routed (`routed`)** | Multi-exit host routing mode. `amnezia-awg3` forwards packets onto the `br-awg-egress` bridge (`172.30.90.0/29`), where host `amnezia-egressd` maps each peer's inner `10.90.x.y/32` IP to its assigned Exit IP via Linux policy routing (`ip rule` + `fwmark` + routing tables `200..219`) and `SNAT --to-source`. |
+| **Entry IP vs Exit IP vs Variant (`Entry → Exit`)** | **Entry IP** is the endpoint address clients connect to; **Exit IP** is the public IP websites see; a **Server variant** binds one Entry to one Exit (one Entry IP can serve multiple variants with different Exit IPs). |
+| **`amnezia-egressd`** | Lightweight root systemd service (`MemoryMax=32M`) bundled inside the `node-agent` image and controlled over `/run/amnezia-egress/egressd.sock` (`10001:0`, `0600`). Upgraded and rolled back atomically with `node-agent` without dropping VPN tunnels. |
+| **Routing tables (`200..219`)** | Isolated Linux routing tables (one per Exit IP, auto-assigned or pinned manually) so each exit leaves via the right NIC and gateway without altering the host `main` table or breaking SSH / host relays. |
+| **Block outbound SMTP (`egressBlockSmtp`)** | On by default; enforced on the host in `routed` mode (or saved in DB/state if toggled in `masquerade`). Drops outbound TCP port `25` only, protecting exit IPs from spam abuse tickets and blocklists while keeping mail-client ports `465`/`587` and webmail working. Editable in UI and CLI (`node-update --egress-block-smtp=`). |
+| **Isolate RFC1918 (`egressIsolatePrivate`)** | On by default; enforced in `routed` mode. Blocks VPN clients from reaching private/internal ranges (`10.0.0.0/8`, `172.16.0.0/12`, `192.168.0.0/16`, `169.254.0.0/16`, `100.64.0.0/10`, `127.0.0.0/8`), including VPS LANs and cloud metadata endpoints. |
+| **DNS DNAT (`amneziaDnsDnat`, `enforceDnsDnat`)** | `amneziaDnsDnat` (on by default) redirects queries sent to AmneziaVPN's built-in `172.29.172.254:53` to the exit's `dnsPrimary` via its Exit IP. `enforceDnsDnat` (off by default) intercepts *all* client `:53` UDP/TCP DNS traffic (overrides custom DNS set on the device). |
+| **Allow as Entry (`allowAsEntry`)** | By default the panel warns when an Exit IP matches an Entry IP (to avoid correlating inbound and outbound IPs). Enable it when intentionally reusing the same IP for both Entry and Exit. |
+| **Hot-swap IP (`node-exit-swap`)** | Replaces a burned/blocked Exit IP in place (updates `SNAT` and flushes conntrack) without re-issuing client configs; omitting `--interface`/`--gateway` clears stale overrides for auto-discovery. |
+| **Mode drift (`modeDrift` / `node-egress-adopt`)** | Shown when DB `egressMode` disagrees with live host `observedMode` (for instance after a DB restore). Sync leaves live traffic intact until you either adopt the host mode or push the desired DB mode. |
+| **WyTunnel bridge transport (`wytunnel`)** | Optional FakeTCP alternative to `frp_tcp` on AWG 3.1 bridges ([`wyrtensi/wytunnel`](https://github.com/wyrtensi/wytunnel)). Runs either a persistent multi-stream pool (default `10` tunnels per node with staggered startup, sticky routing, `0 ms` failover, and seamless scheduled rotation) or classic eBPF-offloaded per-client FakeTCP, and lets you stop/disable inactive `frpc`/`frps` so they use zero RAM/CPU. |
+| **Topology map online counters (`onlinePeerCount`)** | Overview Fleet Topology Map cards show recently active keys (`180s` window, excluding probe service keys) across every stage (**Bridge → Node → Entry → Exit**) plus a per-protocol breakdown (`onlineByProtocol`) in the inspector. |
+| **Manual key-update notices (`node-notify-key-update`)** | Operator-triggered banner asking owners of keys issued/downloaded before `notifiedAt` to re-download their config, scoped per **Node**, **Exit IP**, or **Entry → Exit Variant**. Clears automatically only when the key owner views/downloads their own config, without leaking internal Exit IPs or internal node names. |
 
 ---
 

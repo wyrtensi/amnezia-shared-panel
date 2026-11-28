@@ -4,7 +4,12 @@ import {
   bridgePanelDnsHostnameSchema,
   bridgeRouteCandidateCheckPayloadSchema,
   decodeRegistrationMarkerHeader,
+  decodeWytunnelHandshakeBase64Length,
   encodeRegistrationMarkerHeader,
+  isWytunnelVersionOutdated,
+  normalizeWytunnelTransportConfig,
+  parseWytunnelReleaseRepo,
+  parseWytunnelReleaseVersion,
   PROBE_CAPABILITY_MAX_AGE_MS,
   PROBE_CAPABILITY_REFRESH_MS,
   probeCapabilitiesDue,
@@ -23,6 +28,9 @@ import {
   publicIpv4Schema,
   updateBridgeRequestSchema,
   updateNodeRequestSchema,
+  WYTUNNEL_DEFAULT_REPO,
+  wytunnelReleaseSchema,
+  wytunnelTransportConfigSchema,
 } from "./index.js";
 
 const nonpublic = [
@@ -365,5 +373,95 @@ describe("parseBridgeAgentImageRepository", () => {
       repository: undefined,
       error: expect.stringContaining("differ from NODE_AGENT_UPDATE_REPO") as unknown,
     });
+  });
+});
+
+describe("wytunnelTransportConfigSchema handshake mimicry", () => {
+  it("accepts none, tls_client_hello (with/without SNI), http_ws_upgrade, and valid custom Base64", () => {
+    expect(normalizeWytunnelTransportConfig({}).handshakeMode).toBe("none");
+
+    const tlsNoSni = wytunnelTransportConfigSchema.parse({ handshakeMode: "tls_client_hello" });
+    expect(tlsNoSni.handshakeMode).toBe("tls_client_hello");
+    expect(tlsNoSni.handshakeSni).toBeUndefined();
+
+    const tlsWithSni = wytunnelTransportConfigSchema.parse({
+      handshakeMode: "tls_client_hello",
+      handshakeSni: "edge.example.org",
+    });
+    expect(tlsWithSni.handshakeSni).toBe("edge.example.org");
+
+    const ws = wytunnelTransportConfigSchema.parse({
+      handshakeMode: "http_ws_upgrade",
+      handshakeSni: "ws.example.org",
+      handshakePath: "/ws/v1",
+    });
+    expect(ws.handshakeMode).toBe("http_ws_upgrade");
+    expect(ws.handshakePath).toBe("/ws/v1");
+
+    const custom = wytunnelTransportConfigSchema.parse({
+      handshakeMode: "custom",
+      handshakePacketData: "FgMBAAUAAAAAAQ==",
+    });
+    expect(custom.handshakePacketData).toBe("FgMBAAUAAAAAAQ==");
+    expect(decodeWytunnelHandshakeBase64Length("FgMBAAUAAAAAAQ==")).toBe(10);
+  });
+
+  it("rejects custom mode without payload, oversized Base64, and malformed SNI or path", () => {
+    expect(
+      wytunnelTransportConfigSchema.safeParse({ handshakeMode: "custom" }).success,
+    ).toBe(false);
+    expect(
+      wytunnelTransportConfigSchema.safeParse({
+        handshakeMode: "custom",
+        handshakePacketData: "QUFB".repeat(201), // 603 decoded bytes > 600 limit
+      }).success,
+    ).toBe(false);
+    expect(
+      wytunnelTransportConfigSchema.safeParse({
+        handshakeMode: "tls_client_hello",
+        handshakeSni: "bad host/slash",
+      }).success,
+    ).toBe(false);
+    expect(
+      wytunnelTransportConfigSchema.safeParse({
+        handshakeMode: "http_ws_upgrade",
+        handshakePath: "missing-leading-slash",
+      }).success,
+    ).toBe(false);
+  });
+});
+
+describe("wytunnel release metadata and semver comparison", () => {
+  it("parses WYTUNNEL_RELEASE_REPO and WYTUNNEL_RELEASE_VERSION safely", () => {
+    expect(parseWytunnelReleaseRepo(undefined)).toBe(WYTUNNEL_DEFAULT_REPO);
+    expect(parseWytunnelReleaseRepo("bad repo name")).toBe(WYTUNNEL_DEFAULT_REPO);
+    expect(parseWytunnelReleaseRepo(" my-org/wytunnel-fork ")).toBe("my-org/wytunnel-fork");
+
+    expect(parseWytunnelReleaseVersion(undefined)).toBeUndefined();
+    expect(parseWytunnelReleaseVersion("not-a-ver")).toBeUndefined();
+    expect(parseWytunnelReleaseVersion("0.2.0")).toBe("v0.2.0");
+    expect(parseWytunnelReleaseVersion(" v1.2.3-rc.1 ")).toBe("v1.2.3-rc.1");
+  });
+
+  it("compares installed WyTunnel version against offered release", () => {
+    expect(isWytunnelVersionOutdated("0.1.0", "v0.2.0")).toBe(true);
+    expect(isWytunnelVersionOutdated("0.1.0", "0.1.1")).toBe(true);
+    expect(isWytunnelVersionOutdated("0.2.0-rc.1", "0.2.0")).toBe(true);
+    expect(isWytunnelVersionOutdated("0.2.0", "v0.2.0")).toBe(false);
+    expect(isWytunnelVersionOutdated("0.3.0", "0.2.0")).toBe(false);
+    expect(isWytunnelVersionOutdated(null, "0.2.0")).toBe(false);
+  });
+
+  it("validates wytunnelReleaseSchema payloads", () => {
+    const parsed = wytunnelReleaseSchema.parse({
+      repository: "wyrtensi/wytunnel",
+      tag: "v0.1.0",
+      version: "0.1.0",
+      htmlUrl: "https://github.com/wyrtensi/wytunnel/releases/tag/v0.1.0",
+      publishedAt: null,
+      source: "fallback",
+      assets: { amd64: null, arm64: null },
+    });
+    expect(parsed.tag).toBe("v0.1.0");
   });
 });

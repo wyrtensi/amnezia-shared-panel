@@ -42,8 +42,11 @@ const NAME_MIN_BYTES = 8;
 
 export type WidgetNode = {
   name: string;
+  entryGroup?: string;
+  entryName?: string;
   status: ReachabilityStatus;
   levels: ProbeLevels | null;
+  egressMatch?: boolean | null;
   failingSince: Date | null;
   online: number;
   /** The newest handshake of a person's key on the node, revoked keys included. */
@@ -82,10 +85,11 @@ export type WidgetData = {
 const mark = (level: ProbeLevel | undefined): string =>
   level?.ok === true ? "1" : level?.ok === false ? "0" : "-";
 
-const levelFlags = (levels: ProbeLevels | null): string =>
-  levels
-    ? mark(levels.ping) + mark(levels.tcp) + mark(levels.handshake) + mark(levels.http)
-    : "----";
+const levelFlags = (levels: ProbeLevels | null, egressMatch?: boolean | null): string => {
+  if (!levels) return "----";
+  const httpFlag = egressMatch === false ? "0" : mark(levels.http);
+  return mark(levels.ping) + mark(levels.tcp) + mark(levels.handshake) + httpFlag;
+};
 
 const rank = (node: WidgetNode) => (node.status === "failed" ? 0 : node.status === "error" ? 1 : 2);
 
@@ -115,13 +119,56 @@ export const peopleMinutes = (handshakeAt: Date | null, checkedAt: Date | null):
     ? Math.max(0, Math.floor((checkedAt.getTime() - handshakeAt.getTime()) / 60_000))
     : null;
 
+const latestHandshake = (nodes: readonly WidgetNode[]): Date | null => {
+  let latest: Date | null = null;
+  for (const node of nodes) {
+    const candidate = node.lastPersonHandshakeAt;
+    if (candidate && (!latest || candidate.getTime() > latest.getTime())) {
+      latest = candidate;
+    }
+  }
+  return latest;
+};
+
+const collapseHealthySiblings = (ordered: readonly WidgetNode[]): WidgetNode[] => {
+  const healthyGroups = new Map<string, WidgetNode[]>();
+  for (const node of ordered) {
+    if (node.status === "ok" && node.entryGroup) {
+      const group = healthyGroups.get(node.entryGroup) ?? [];
+      group.push(node);
+      healthyGroups.set(node.entryGroup, group);
+    }
+  }
+  const emitted = new Set<string>();
+  const collapsed: WidgetNode[] = [];
+  for (const node of ordered) {
+    if (node.status === "ok" && node.entryGroup) {
+      const group = healthyGroups.get(node.entryGroup) ?? [];
+      if (group.length >= 2) {
+        if (emitted.has(node.entryGroup)) continue;
+        emitted.add(node.entryGroup);
+        collapsed.push({
+          ...node,
+          name: `${node.entryName ?? node.name} (×${group.length})`,
+          online: group.reduce((sum, item) => sum + item.online, 0),
+          lastPersonHandshakeAt: latestHandshake(group),
+        });
+        continue;
+      }
+    }
+    collapsed.push(node);
+  }
+  return collapsed;
+};
+
 export const buildWidgetData = (input: WidgetInput): WidgetData => {
   const ordered = orderNodes(input.nodes);
+  let activeNodes = ordered;
   const rowsAt = (nameBytes: number): Row[] =>
-    ordered.map((node) => {
+    activeNodes.map((node) => {
       const row: Row = [
         cutBytes(node.name, nameBytes),
-        levelFlags(node.levels),
+        levelFlags(node.levels, node.egressMatch),
         String(node.online),
         String(peopleMinutes(node.lastPersonHandshakeAt, input.checkedAt) ?? ""),
       ];
@@ -144,6 +191,13 @@ export const buildWidgetData = (input: WidgetInput): WidgetData => {
     n: rowsAt(NAME_MAX_BYTES),
     x: 0,
   };
+  if (byteSize(data) > WIDGET_DATA_MAX_BYTES) {
+    const collapsed = collapseHealthySiblings(ordered);
+    if (collapsed.length < ordered.length) {
+      activeNodes = collapsed;
+      data.n = rowsAt(NAME_MAX_BYTES);
+    }
+  }
   // Shorter names first; when even the shortest do not fit, the last rows
   // (ok nodes, by the order above) are left out and counted.
   for (let bytes = NAME_MAX_BYTES; byteSize(data) > WIDGET_DATA_MAX_BYTES; bytes -= 4) {

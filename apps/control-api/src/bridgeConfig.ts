@@ -3,6 +3,8 @@ import {
   parseBridgeJobsEnabled,
   parseBridgeManagementHosts,
   parseBridgeObservationStaleMs,
+  parseWytunnelReleaseRepo,
+  parseWytunnelReleaseVersion,
 } from "@amnezia/contracts";
 import { ApiError } from "./service.js";
 
@@ -29,6 +31,10 @@ export type BridgeConfig = {
    * node-agent's. Undefined disables offering an image in setup commands.
    */
   agentImageRepository: string | undefined;
+  /** `WYTUNNEL_RELEASE_REPO` (`<owner>/<repo>`, defaults to `wyrtensi/wytunnel`). */
+  wytunnelReleaseRepo: string;
+  /** Optional `WYTUNNEL_RELEASE_VERSION` pin (`vX.Y.Z`); when unset, Control API tracks latest GitHub Release. */
+  wytunnelReleaseVersion: string | undefined;
 };
 
 const agentImageRepositoryOf = (env: NodeJS.ProcessEnv): string | undefined => {
@@ -47,6 +53,8 @@ export const resolveBridgeConfig = (env: NodeJS.ProcessEnv): BridgeConfig => ({
   ),
   managementHosts: parseBridgeManagementHosts(env.VPN_BRIDGE_MANAGEMENT_HOSTS),
   agentImageRepository: agentImageRepositoryOf(env),
+  wytunnelReleaseRepo: parseWytunnelReleaseRepo(env.WYTUNNEL_RELEASE_REPO),
+  wytunnelReleaseVersion: parseWytunnelReleaseVersion(env.WYTUNNEL_RELEASE_VERSION),
 });
 
 export const bridgeJobsDisabledError = (): ApiError =>

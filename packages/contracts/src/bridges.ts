@@ -77,6 +77,241 @@ export const BRIDGE_DEFAULT_CONTROL_TCP_PORT = 7000;
 export const BRIDGE_DEFAULT_UDP_PORT_START = 41000;
 export const BRIDGE_DEFAULT_UDP_PORT_END = 41031;
 
+export const BRIDGE_ROUTE_TRANSPORTS = ["frp_tcp", "wytunnel"] as const;
+export const bridgeRouteTransportSchema = z.enum(BRIDGE_ROUTE_TRANSPORTS);
+export type BridgeRouteTransport = z.infer<typeof bridgeRouteTransportSchema>;
+
+export const BRIDGE_WYTUNNEL_DEFAULT_PORT_BASE = 14100;
+export const BRIDGE_WYTUNNEL_DEFAULT_POOL_SIZE = 10;
+export const BRIDGE_WYTUNNEL_DEFAULT_ROTATE_INTERVAL_SEC = 2700;
+export const BRIDGE_WYTUNNEL_DEFAULT_ROTATE_DRAIN_SEC = 5;
+export const BRIDGE_WYTUNNEL_DEFAULT_KEEPALIVE_SEC = 25;
+export const WYTUNNEL_HANDSHAKE_MAX_BYTES = 600;
+export const WYTUNNEL_HANDSHAKE_DEFAULT_WS_PATH = "/ws";
+export const WYTUNNEL_DEFAULT_REPO = "wyrtensi/wytunnel";
+export const WYTUNNEL_FALLBACK_TAG = "v0.1.0";
+
+const WYTUNNEL_RELEASE_REPO_RE = /^[A-Za-z0-9._-]+\/[A-Za-z0-9._-]+$/;
+const WYTUNNEL_RELEASE_VERSION_RE = /^v?(\d+\.\d+\.\d+(?:-[A-Za-z0-9.]+)?)$/;
+
+export const wytunnelReleaseAssetSchema = z.object({
+  name: z.string().min(1).max(200),
+  url: z.url(),
+  size: z.int().nonnegative(),
+  sha256: z
+    .string()
+    .regex(/^[0-9a-f]{64}$/)
+    .nullable(),
+});
+export type WytunnelReleaseAsset = z.infer<typeof wytunnelReleaseAssetSchema>;
+
+export const wytunnelReleaseSchema = z.object({
+  repository: z.string().min(1).max(200),
+  tag: z.string().min(1).max(64),
+  version: z.string().min(1).max(64),
+  htmlUrl: z.url(),
+  publishedAt: z.string().nullable(),
+  source: z.enum(["github", "pinned_env", "fallback"]),
+  assets: z.object({
+    amd64: wytunnelReleaseAssetSchema.nullable(),
+    arm64: wytunnelReleaseAssetSchema.nullable(),
+  }),
+});
+export type WytunnelRelease = z.infer<typeof wytunnelReleaseSchema>;
+
+/** Parse `WYTUNNEL_RELEASE_REPO` (`<owner>/<repo>`); defaults to `wyrtensi/wytunnel`. */
+export const parseWytunnelReleaseRepo = (raw: string | undefined): string => {
+  const trimmed = raw?.trim() ?? "";
+  return WYTUNNEL_RELEASE_REPO_RE.test(trimmed) ? trimmed : WYTUNNEL_DEFAULT_REPO;
+};
+
+/** Parse `WYTUNNEL_RELEASE_VERSION` (normalizing a `v` prefix); undefined when unset/invalid. */
+export const parseWytunnelReleaseVersion = (raw: string | undefined): string | undefined => {
+  const trimmed = raw?.trim() ?? "";
+  if (!trimmed) return undefined;
+  const match = WYTUNNEL_RELEASE_VERSION_RE.exec(trimmed);
+  return match ? `v${match[1]}` : undefined;
+};
+
+type ParsedSemver = { major: number; minor: number; patch: number; pre: string | null };
+
+const parseSemver = (raw: string | null | undefined): ParsedSemver | null => {
+  const trimmed = raw?.trim().replace(/^v/i, "") ?? "";
+  const match = /^(\d+)\.(\d+)\.(\d+)(?:-([A-Za-z0-9.]+))?$/.exec(trimmed);
+  if (!match) return null;
+  return {
+    major: Number(match[1]),
+    minor: Number(match[2]),
+    patch: Number(match[3]),
+    pre: match[4] ?? null,
+  };
+};
+
+/** Strictly true when `installedVersion` is older than `targetVersion`. */
+export const isWytunnelVersionOutdated = (
+  installedVersion: string | null | undefined,
+  targetVersion: string | null | undefined,
+): boolean => {
+  const cur = parseSemver(installedVersion);
+  const tgt = parseSemver(targetVersion);
+  if (!cur || !tgt) return false;
+  if (cur.major !== tgt.major) return cur.major < tgt.major;
+  if (cur.minor !== tgt.minor) return cur.minor < tgt.minor;
+  if (cur.patch !== tgt.patch) return cur.patch < tgt.patch;
+  if (cur.pre !== null && tgt.pre === null) return true;
+  if (cur.pre === null && tgt.pre !== null) return false;
+  if (cur.pre !== null && tgt.pre !== null) return cur.pre < tgt.pre;
+  return false;
+};
+
+const WYTUNNEL_HANDSHAKE_SNI_RE =
+  /^[A-Za-z0-9](?:[A-Za-z0-9-]{0,61}[A-Za-z0-9])?(?:\.[A-Za-z0-9](?:[A-Za-z0-9-]{0,61}[A-Za-z0-9])?)*$/;
+const WYTUNNEL_HANDSHAKE_PATH_RE = /^\/[A-Za-z0-9._~:@+%,/-]{0,127}$/;
+const WYTUNNEL_HANDSHAKE_BASE64_RE = /^[A-Za-z0-9+/_-]{2,804}={0,2}$/;
+
+/** Decode length of standard or URL-safe Base64 (matching Rust `decode_base64_lenient`). */
+export const decodeWytunnelHandshakeBase64Length = (raw: string): number | null => {
+  const trimmed = raw.trim();
+  if (!trimmed || !WYTUNNEL_HANDSHAKE_BASE64_RE.test(trimmed)) return null;
+  const unpadded = trimmed.replaceAll("-", "+").replaceAll("_", "/").replace(/=+$/, "");
+  const mod = unpadded.length % 4;
+  if (mod === 1) return null;
+  // Exact decoded byte length for standard unpadded Base64
+  return Math.floor((unpadded.length * 3) / 4);
+};
+
+export const wytunnelFecConfigSchema = z
+  .object({
+    k: z.int().min(1).max(200),
+    m: z.int().min(1).max(50),
+  })
+  .refine((v) => v.k + v.m <= 256, {
+    message: "FEC k + m must not exceed 256",
+  });
+export type WytunnelFecConfig = z.infer<typeof wytunnelFecConfigSchema>;
+
+export const wytunnelHandshakeModeSchema = z.enum([
+  "none",
+  "tls_client_hello",
+  "http_ws_upgrade",
+  "custom",
+]);
+export type WytunnelHandshakeMode = z.infer<typeof wytunnelHandshakeModeSchema>;
+
+export const wytunnelTransportConfigBaseSchema = z.object({
+  /** Persistent pre-warmed FakeTCP tunnel count per node (`0` = on-demand direct mode; `10` recommended). */
+  poolSize: z.int().min(0).max(64).default(BRIDGE_WYTUNNEL_DEFAULT_POOL_SIZE),
+  /** Seconds between seamless background rotations of the oldest pool tunnel (`0` = disabled). */
+  poolRotateIntervalSec: z
+    .int()
+    .refine((v) => v === 0 || (v >= 60 && v <= 86_400), {
+      message: "Rotation interval must be 0 (off) or between 60 and 86400 seconds",
+    })
+    .default(BRIDGE_WYTUNNEL_DEFAULT_ROTATE_INTERVAL_SEC),
+  /** Seconds to keep draining in-flight packets on a rotated-out pool tunnel before closing it. */
+  poolRotateDrainSec: z.int().min(1).max(60).default(BRIDGE_WYTUNNEL_DEFAULT_ROTATE_DRAIN_SEC),
+  /** Seconds without incoming FakeTCP traffic before keepalive probes start (`0` = off). */
+  keepaliveSec: z
+    .int()
+    .refine((v) => v === 0 || (v >= 5 && v <= 300), {
+      message: "Keepalive must be 0 (off) or between 5 and 300 seconds",
+    })
+    .default(BRIDGE_WYTUNNEL_DEFAULT_KEEPALIVE_SEC),
+  /** Optional Reed-Solomon FEC (`null` = off, recommended while link loss < 0.2%). */
+  fec: wytunnelFecConfigSchema.nullable().default(null),
+  /** Optional post-handshake first-packet mimicry (`none` by default). */
+  handshakeMode: wytunnelHandshakeModeSchema.default("none"),
+  /** Optional ASCII hostname used as SNI (`tls_client_hello`) or `Host` header (`http_ws_upgrade`). */
+  handshakeSni: z
+    .string()
+    .trim()
+    .min(1)
+    .max(253)
+    .regex(WYTUNNEL_HANDSHAKE_SNI_RE, "Handshake SNI/Host must be a valid ASCII hostname")
+    .nullable()
+    .optional(),
+  /** Optional request path for `http_ws_upgrade` mode (defaults to `/ws`). */
+  handshakePath: z
+    .string()
+    .trim()
+    .min(1)
+    .max(128)
+    .regex(WYTUNNEL_HANDSHAKE_PATH_RE, "Handshake path must start with '/' and contain safe URL characters")
+    .nullable()
+    .optional(),
+  /** Static Base64-encoded payload sent when `handshakeMode === "custom"` (1..=600 bytes). */
+  handshakePacketData: z
+    .string()
+    .trim()
+    .min(2)
+    .max(808)
+    .regex(WYTUNNEL_HANDSHAKE_BASE64_RE, "Handshake packet data must be valid Base64")
+    .refine(
+      (v) => {
+        const len = decodeWytunnelHandshakeBase64Length(v);
+        return len !== null && len >= 1 && len <= WYTUNNEL_HANDSHAKE_MAX_BYTES;
+      },
+      { message: `Handshake packet data must decode to 1..=${WYTUNNEL_HANDSHAKE_MAX_BYTES} bytes` },
+    )
+    .nullable()
+    .optional(),
+  /** Enable eBPF `clsact` NIC offload when running direct mode (userspace mux in pool mode). */
+  ebpfEnabled: z.boolean().default(true),
+});
+
+export const wytunnelTransportConfigSchema = wytunnelTransportConfigBaseSchema.superRefine(
+  (value, ctx) => {
+    if (value.handshakeMode === "custom" && !value.handshakePacketData) {
+      ctx.addIssue({
+        code: "custom",
+        path: ["handshakePacketData"],
+        message: "Custom handshake mode requires Base64 handshakePacketData",
+      });
+    }
+  },
+);
+export type WytunnelTransportConfig = z.infer<typeof wytunnelTransportConfigSchema>;
+
+export const DEFAULT_WYTUNNEL_TRANSPORT_CONFIG: WytunnelTransportConfig =
+  wytunnelTransportConfigSchema.parse({});
+
+export const normalizeWytunnelTransportConfig = (
+  input: unknown,
+): WytunnelTransportConfig => {
+  const parsed = wytunnelTransportConfigSchema.safeParse(input ?? {});
+  return parsed.success ? parsed.data : { ...DEFAULT_WYTUNNEL_TRANSPORT_CONFIG };
+};
+
+export const deriveWytunnelTransportPort = (
+  publicUdpPort: number,
+  udpPortStart: number = BRIDGE_DEFAULT_UDP_PORT_START,
+): number => {
+  const rawSlot = Math.max(0, publicUdpPort - udpPortStart);
+  const slot = rawSlot <= 250 ? rawSlot : publicUdpPort % 250;
+  const candidate = BRIDGE_WYTUNNEL_DEFAULT_PORT_BASE + slot;
+  return candidate <= 65_535 ? candidate : BRIDGE_WYTUNNEL_DEFAULT_PORT_BASE + (slot % 250);
+};
+
+export const bridgeRouteTelemetrySchema = z.object({
+  version: z.string().max(64).nullable().optional(),
+  mode: z.enum(["direct", "pool"]).optional(),
+  ebpfMode: z.enum(["nic", "userspace_fallback"]).optional(),
+  uptimeSec: z.int().nonnegative().optional(),
+  activeSessions: z.int().nonnegative().optional(),
+  healthyStreams: z.int().nonnegative().optional(),
+  targetStreams: z.int().nonnegative().optional(),
+  drainingStreams: z.int().nonnegative().optional(),
+  poolRttMs: z.number().nonnegative().nullable().optional(),
+  rxPackets: z.int().nonnegative().optional(),
+  txPackets: z.int().nonnegative().optional(),
+  fecRecovered: z.int().nonnegative().optional(),
+  fecLostGroups: z.int().nonnegative().optional(),
+  keepaliveResets: z.int().nonnegative().optional(),
+  failoversTotal: z.int().nonnegative().optional(),
+  rotationsTotal: z.int().nonnegative().optional(),
+});
+export type BridgeRouteTelemetry = z.infer<typeof bridgeRouteTelemetrySchema>;
+
 const portSchema = z.int().min(1).max(65_535);
 const bridgeNameSchema = z.string().trim().min(1).max(120);
 
@@ -113,6 +348,8 @@ export const createBridgeRequestSchema = z
     udpPortStart: portSchema.default(BRIDGE_DEFAULT_UDP_PORT_START),
     udpPortEnd: portSchema.default(BRIDGE_DEFAULT_UDP_PORT_END),
     panelDnsHostname: bridgePanelDnsHostnameSchema.nullable().optional(),
+    defaultTransport: bridgeRouteTransportSchema.optional(),
+    frpsEnabled: z.boolean().optional(),
   })
   .refine((value) => value.udpPortStart <= value.udpPortEnd, {
     path: ["udpPortEnd"],
@@ -167,6 +404,8 @@ export const updateBridgeRequestSchema = z
     name: bridgeNameSchema.optional(),
     panelDnsHostname: bridgePanelDnsHostnameSchema.nullable().optional(),
     reachabilityEnabled: z.boolean().optional(),
+    defaultTransport: bridgeRouteTransportSchema.optional(),
+    frpsEnabled: z.boolean().optional(),
     managementApiUrl: bridgeManagementApiUrlSchema.optional(),
     apiKey: bridgeAgentApiKeySchema.optional(),
   })
@@ -246,6 +485,10 @@ export const bridgeRouteSchema = z.object({
   bridgeId: z.uuid(),
   publicUdpPort: portSchema,
   state: bridgeRouteStateSchema,
+  transport: bridgeRouteTransportSchema.default("frp_tcp"),
+  transportPort: portSchema.nullable().default(null),
+  transportConfig: wytunnelTransportConfigSchema.optional(),
+  telemetry: bridgeRouteTelemetrySchema.nullable().optional(),
   frpProxyName: z.string(),
   observedOnline: z.boolean().nullable(),
   observedRegistrationMarker: z.string().nullable(),
@@ -327,8 +570,13 @@ export const bridgeRouteSummarySchema = z.object({
   nodeName: z.string(),
   publicUdpPort: portSchema,
   state: bridgeRouteStateSchema,
+  transport: bridgeRouteTransportSchema.default("frp_tcp"),
+  transportPort: portSchema.nullable().optional(),
+  transportConfig: wytunnelTransportConfigSchema.optional(),
+  telemetry: bridgeRouteTelemetrySchema.nullable().optional(),
   registration: bridgeRouteRegistrationSchema,
   verification: bridgeRouteVerificationSchema,
+  setupCommands: z.lazy(() => routeSetupCommandsSchema).optional(),
 });
 
 const bridgeRotationRouteSchema = z.object({
@@ -390,6 +638,14 @@ export const routeSetupCommandsSchema = z.object({
   dryRun: z.string(),
   checkTls: z.string().optional(),
   remove: z.string(),
+  /** Bridge-host install/dry-run/remove commands (populated for WyTunnel routes). */
+  bridgeInstall: z.string().optional(),
+  bridgeDryRun: z.string().optional(),
+  bridgeRemove: z.string().optional(),
+  /** Explicitly stops and disables the inactive `amnezia-frpc@<routeId>` unit on the node (0 RAM/CPU). */
+  disableFrpc: z.string().optional(),
+  /** Explicitly stops and disables `amnezia-frps` on a WyTunnel-only bridge (0 RAM/CPU). */
+  disableFrps: z.string().optional(),
 });
 export type RouteSetupCommands = z.infer<typeof routeSetupCommandsSchema>;
 
@@ -478,6 +734,10 @@ export const bridgeSchema = z.object({
   publicIpv4: z.string(),
   panelDnsHostname: z.string().nullable().optional(),
   reachabilityEnabled: z.boolean().optional(),
+  defaultTransport: bridgeRouteTransportSchema.optional(),
+  frpsEnabled: z.boolean().optional(),
+  onlinePeerCount: z.int().nonnegative().optional(),
+  onlineByProtocol: z.record(z.string(), z.int().nonnegative()).optional(),
   alertState: bridgeAlertStateSchema.optional(),
   controlTcpPort: portSchema,
   udpPortStart: portSchema,
@@ -526,7 +786,27 @@ export const adminOverviewBridgesSchema = z.object({
 export const prepareBridgeRouteRequestSchema = z.object({
   bridgeId: z.uuid(),
   publicUdpPort: portSchema.optional(),
+  transport: bridgeRouteTransportSchema.optional(),
+  transportPort: portSchema.optional(),
+  transportConfig: wytunnelTransportConfigBaseSchema.partial().optional(),
 });
+
+export const updateBridgeRouteTransportRequestSchema = z
+  .object({
+    transport: bridgeRouteTransportSchema.optional(),
+    transportPort: portSchema.nullable().optional(),
+    transportConfig: wytunnelTransportConfigBaseSchema.partial().optional(),
+  })
+  .refine(
+    (value) =>
+      value.transport !== undefined ||
+      value.transportPort !== undefined ||
+      value.transportConfig !== undefined,
+    { message: "At least one transport field is required" },
+  );
+export type UpdateBridgeRouteTransportRequest = z.infer<
+  typeof updateBridgeRouteTransportRequestSchema
+>;
 
 /** A route as the node's route editor shows it: plus its bridge's public settings. */
 export const nodeBridgeRouteSchema = bridgeRouteSchema.extend({
@@ -629,6 +909,8 @@ export const infrastructureVpnItemSchema = z.object({
   enabledProtocols: z.array(z.enum(["awg2", "awg3"])).nullable().optional(),
   maxPeers: z.int().min(0).optional(),
   peerCount: z.int().min(0).optional(),
+  onlinePeerCount: z.int().nonnegative().optional(),
+  onlineByProtocol: z.record(z.string(), z.int().nonnegative()).optional(),
   publicHost: z.string().nullable().optional(),
   publicIp: z.string().nullable().optional(),
   agentVersion: z.string().nullable().optional(),

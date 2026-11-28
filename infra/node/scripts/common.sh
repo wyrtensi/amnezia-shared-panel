@@ -5,12 +5,15 @@ SCRIPT_DIR="$(CDPATH='' cd -- "$(dirname -- "$0")" && pwd)"
 NODE_DIR="$(CDPATH='' cd -- "$SCRIPT_DIR/.." && pwd)"
 COMPOSE_FILE="$NODE_DIR/compose.yaml"
 ENV_FILE="$NODE_DIR/.env"
+# Consumed by preflight.sh when sourcing common.sh.
+# shellcheck disable=SC2034
 SECRET_FILE="$NODE_DIR/secrets/node-agent-api-key"
 STATE_ROOT="$NODE_DIR/state"
 STATE_DIR="$NODE_DIR/state/amnezia-awg2"
 STATE_DIR_AWG3="$NODE_DIR/state/amnezia-awg3"
 BACKUP_DIR="$NODE_DIR/backups"
 LOCK_DIR="$NODE_DIR/.deploy.lock"
+EGRESS_STATE_FILE="${EGRESS_STATE_FILE:-/etc/amnezia-egress/state.json}"
 AWG2_IMAGE='amneziavpn/amneziawg-go:0.2.19@sha256:3c78eb57ef5cb44f63aed185e79c104593c854a5ebde3e1075470301bcc77c44'
 AWG2_REPO_DIGEST='amneziavpn/amneziawg-go@sha256:3c78eb57ef5cb44f63aed185e79c104593c854a5ebde3e1075470301bcc77c44'
 AWG3_IMAGE='amneziavpn/amneziawg-go:3.1.20260828@sha256:cbafc02b8373a83f428272db6d8001b37bc02e6211cbd8c0cb4e2e3759b12b72'
@@ -27,8 +30,7 @@ fail() {
 
 # Does this node serve AWG 2.0? Read from PROTOCOLS_ENABLED so there is exactly
 # one switch: the same value the agent gets, and the one that decides whether
-# the awg2 compose profile is active. A node whose .env predates this key is
-# AWG 3.1 only - preflight refuses to act on that if awg2 is actually running.
+# the awg2 compose profile is active.
 awg2_enabled() {
   case ",$(env_value PROTOCOLS_ENABLED)," in
     *,amneziawg2,*) return 0 ;;
@@ -37,8 +39,7 @@ awg2_enabled() {
 }
 
 # Every compose call goes through here so `config --services`, the health gates
-# and `up` all see the same set of services. A profile passed to one and not the
-# others would deploy awg2 and then never gate it.
+# and `up` all see the same set of services.
 compose() {
   if awg2_enabled; then
     docker compose \
@@ -58,7 +59,25 @@ compose() {
 
 env_value() {
   key="$1"
+  [ -f "$ENV_FILE" ] || return 0
   sed -n "s/^${key}=//p" "$ENV_FILE" | tail -n 1
+}
+
+set_env_value() {
+  key="$1"
+  value="$2"
+  env_tmp="$(mktemp "$NODE_DIR/.env.XXXXXX")" || return 1
+  if [ -f "$ENV_FILE" ]; then
+    awk -v k="$key" -v v="$value" '
+      $0 ~ ("^" k "=") && !seen { print k "=" v; seen = 1; next }
+      { print }
+      END { if (!seen) print k "=" v }
+    ' "$ENV_FILE" >"$env_tmp" || { rm -f "$env_tmp"; return 1; }
+  else
+    printf '%s=%s\n' "$key" "$value" >"$env_tmp" || { rm -f "$env_tmp"; return 1; }
+  fi
+  chmod 600 "$env_tmp"
+  mv -f "$env_tmp" "$ENV_FILE"
 }
 
 acquire_lock() {
@@ -126,9 +145,52 @@ verify_awg3_image() {
     fail "pulled AWG3 image does not match the approved linux/amd64 digest"
 }
 
+# Remove oldest backups matching a prefix pattern in BACKUP_DIR beyond keep_count.
+# UTC timestamps ensure lexicographic reverse sort orders newest first.
+prune_backup_pattern() {
+  pattern="$1"
+  keep="$2"
+  case "$keep" in
+    ''|*[!0-9]*) keep=15 ;;
+  esac
+  [ "$keep" -gt 0 ] || return 0
+  [ -d "$BACKUP_DIR" ] || return 0
+
+  list_tmp="$(mktemp "$BACKUP_DIR/.prune.XXXXXX")" || return 0
+  for entry in "$BACKUP_DIR"/$pattern; do
+    [ -e "$entry" ] || continue
+    basename -- "$entry" >>"$list_tmp"
+  done
+
+  idx=0
+  sort -r "$list_tmp" | while IFS= read -r name; do
+    [ -n "$name" ] || continue
+    idx=$((idx + 1))
+    if [ "$idx" -gt "$keep" ]; then
+      rm -f "$BACKUP_DIR/$name" "$BACKUP_DIR/$name.sha256"
+    fi
+  done
+  rm -f "$list_tmp"
+}
+
+prune_node_backups() {
+  keep="${1:-${BACKUP_KEEP_COUNT:-$(env_value BACKUP_KEEP_COUNT)}}"
+  case "$keep" in
+    '') keep=15 ;;
+  esac
+  prune_backup_pattern 'amnezia-node-*.tar.gz' "$keep"
+  prune_backup_pattern 'egress-state-*.json' "$keep"
+}
+
 create_backup() {
   restart_after="${1:-1}"
-  [ -s "$STATE_DIR/awg0.conf" ] || return 2
+  has_awg2=0
+  has_awg3=0
+  [ -s "$STATE_DIR/awg0.conf" ] && has_awg2=1
+  [ -s "$STATE_DIR_AWG3/awg0.conf" ] && has_awg3=1
+  if [ "$has_awg2" -eq 0 ] && [ "$has_awg3" -eq 0 ]; then
+    return 2
+  fi
 
   awg_was_running=0
   awg3_was_running=0
@@ -147,21 +209,47 @@ create_backup() {
     compose stop --timeout 30 awg3 >/dev/null
   fi
 
-  # Only include the AWG3 state directory when it has been initialized
-  backup_paths="state/amnezia-awg2"
-  [ -s "$STATE_DIR_AWG3/awg0.conf" ] && backup_paths="$backup_paths state/amnezia-awg3"
-
   timestamp="$(date -u '+%Y%m%dT%H%M%SZ')"
+  egress_stage="$NODE_DIR/egress"
+  rm -rf "$egress_stage"
+  mkdir -m 700 "$egress_stage"
+  egress_mode=""
+  if [ -r "$STATE_DIR_AWG3/egress-mode" ] && [ ! -L "$STATE_DIR_AWG3/egress-mode" ]; then
+    egress_mode="$(tr -d '[:space:]' <"$STATE_DIR_AWG3/egress-mode" 2>/dev/null || true)"
+  fi
+  case "$egress_mode" in
+    masquerade|routed) ;;
+    *) egress_mode="$(env_value AWG3_EGRESS_MODE)" ;;
+  esac
+  case "$egress_mode" in
+    masquerade|routed) ;;
+    *) egress_mode="masquerade" ;;
+  esac
+  {
+    printf 'SCHEMA_VERSION=1\n'
+    printf 'AWG3_EGRESS_MODE=%s\n' "$egress_mode"
+    printf 'CREATED_AT=%s\n' "$timestamp"
+  } >"$egress_stage/meta.env"
+  chmod 600 "$egress_stage/meta.env"
+  if [ -f "$EGRESS_STATE_FILE" ] && [ ! -L "$EGRESS_STATE_FILE" ]; then
+    cp "$EGRESS_STATE_FILE" "$egress_stage/state.json"
+    chmod 600 "$egress_stage/state.json"
+  fi
+
+  set -- "egress"
+  [ "$has_awg2" -eq 1 ] && set -- "$@" "state/amnezia-awg2"
+  [ "$has_awg3" -eq 1 ] && set -- "$@" "state/amnezia-awg3"
+
   archive="$BACKUP_DIR/amnezia-node-$timestamp.tar.gz"
   [ ! -e "$archive" ] || archive="$BACKUP_DIR/amnezia-node-$timestamp-$$.tar.gz"
   temporary="$archive.tmp"
 
-  # shellcheck disable=SC2086
-  if ! tar -C "$NODE_DIR" -czf "$temporary" $backup_paths; then
-    rm -f "$temporary"
+  if ! tar -C "$NODE_DIR" -czf "$temporary" "$@"; then
+    rm -rf "$egress_stage" "$temporary"
     restart_services "$awg_was_running" "$agent_was_running" "$awg3_was_running"
     return 1
   fi
+  rm -rf "$egress_stage"
 
   if ! chmod 600 "$temporary" || ! tar -tzf "$temporary" >/dev/null; then
     rm -f "$temporary"
@@ -181,6 +269,7 @@ create_backup() {
     restart_services "$awg_was_running" "$agent_was_running" "$awg3_was_running"
   fi
 
+  prune_node_backups
   printf '%s\n' "$archive"
 }
 
@@ -212,7 +301,11 @@ validate_backup_archive() {
   if tar -tzf "$archive" | awk '
     /^\// { bad=1 }
     /(^|\/)\.\.($|\/)/ { bad=1 }
-    $0 !~ /^state\/amnezia-awg[23](\/|$)/ { bad=1 }
+    {
+      if ($0 ~ /^state\/amnezia-awg[23](\/|$)/) next
+      if ($0 == "egress" || $0 == "egress/" || $0 == "egress/state.json" || $0 == "egress/meta.env") next
+      bad=1
+    }
     END { exit bad ? 0 : 1 }
   '; then
     fail "backup archive contains an unsafe path"

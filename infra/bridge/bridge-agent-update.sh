@@ -46,7 +46,10 @@ SPOOL_DIR="${BRIDGE_UPDATE_SPOOL_DIR:-/var/lib/amnezia-bridge/update}"
 # in progress and the backup of the pin it may have to restore.
 STATE_DIR="${BRIDGE_UPDATER_STATE_DIR:-/var/lib/amnezia-bridge/updater}"
 LOCK_DIR="${BRIDGE_UPDATER_LOCK_DIR:-/run/amnezia-bridge-updater}"
+WYTUNNEL_RUN_DIR="${BRIDGE_WYTUNNEL_RUN_DIR:-/run/amnezia-wytunnel}"
 UPDATE_REPO="${BRIDGE_AGENT_UPDATE_REPO:-}"
+AGENT_PLATFORM="${BRIDGE_AGENT_PLATFORM:-linux/amd64}"
+IMAGE_BUNDLE_DIR="${BRIDGE_AGENT_IMAGE_BUNDLE_DIR:-/opt/amnezia-bridge-bundle}"
 HEALTH_ATTEMPTS="${BRIDGE_AGENT_HEALTH_ATTEMPTS:-30}"
 HEALTH_INTERVAL="${BRIDGE_AGENT_HEALTH_INTERVAL:-2}"
 
@@ -54,6 +57,7 @@ REQUESTS_DIR="${SPOOL_DIR}/requests"
 RESULTS_DIR="${SPOOL_DIR}/results"
 JOURNAL="${STATE_DIR}/journal"
 PIN_BACKUP="${STATE_DIR}/image.pin.previous"
+COMPOSE_BACKUP="${STATE_DIR}/compose.yaml.previous"
 AGENT_DIR="${BRIDGE_ETC}/agent"
 ENV_FILE="${AGENT_DIR}/agent.env"
 PIN_FILE="${AGENT_DIR}/image.pin"
@@ -62,6 +66,25 @@ COMPOSE_FILE="${BRIDGE_DIR}/compose.yaml"
 PROJECT=amnezia-bridge-agent
 AGENT_SERVICE=bridge-agent
 AGENT_CONTAINER=amnezia-bridge-agent
+
+SCRATCH=""
+NEW_EXTRACT_CNAME=""
+OLD_EXTRACT_CNAME=""
+cleanup_scratch() {
+  if [ -n "$NEW_EXTRACT_CNAME" ]; then
+    docker container rm -f "$NEW_EXTRACT_CNAME" >/dev/null 2>&1 || true
+    NEW_EXTRACT_CNAME=""
+  fi
+  if [ -n "$OLD_EXTRACT_CNAME" ]; then
+    docker container rm -f "$OLD_EXTRACT_CNAME" >/dev/null 2>&1 || true
+    OLD_EXTRACT_CNAME=""
+  fi
+  if [ -n "$SCRATCH" ]; then
+    rm -rf -- "$SCRATCH"
+    SCRATCH=""
+  fi
+}
+trap cleanup_scratch EXIT
 
 UUID_RE='^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$'
 DIGEST_RE='^sha256:[0-9a-f]{64}$'
@@ -163,7 +186,7 @@ finish() {
     log "operation ${OP_ID}: cannot record ${state}; keeping the journal and the request for the next run"
     exit 1
   fi
-  rm -f "$JOURNAL" "$PIN_BACKUP"
+  rm -f "$JOURNAL" "$PIN_BACKUP" "$COMPOSE_BACKUP"
   rm -f -- "${REQUESTS_DIR}/${OP_ID}.json"
 }
 
@@ -203,7 +226,89 @@ restore_pin() {
 # --no-deps is required, not optional: only the bridge-agent is replaced, frps
 # (a host service) and anything else are never touched.
 agent_up() {
+  mkdir -p "$WYTUNNEL_RUN_DIR"
+  chmod 0755 "$WYTUNNEL_RUN_DIR" 2>/dev/null || true
   docker compose --project-name "$PROJECT" --env-file "$ENV_FILE" --file "$COMPOSE_FILE" up --detach --no-deps --no-build "$AGENT_SERVICE"
+}
+
+restore_compose() {
+  [ -f "$COMPOSE_BACKUP" ] || return 0
+  cmp -s "$COMPOSE_BACKUP" "$COMPOSE_FILE" 2>/dev/null && return 0
+  atomic_write "$COMPOSE_FILE" 0644 <"$COMPOSE_BACKUP"
+}
+
+# Reconciles compose.yaml and shipped helper scripts from the candidate image
+# bundle without overwriting local host edits.
+reconcile_bundle_files() {
+  local new_cname="amnezia-bridge-update-extract-new-$$-${RANDOM}"
+  local old_cname="amnezia-bridge-update-extract-old-$$-${RANDOM}"
+  local new_compose old_compose new_ships=0 old_ships=0 file_hash
+  SCRATCH="$(mktemp -d)" || return 0
+
+  if docker create --name "$new_cname" "$CANDIDATE" >/dev/null 2>&1; then
+    NEW_EXTRACT_CNAME="$new_cname"
+  fi
+  if [ -n "$PREVIOUS" ] && docker create --name "$old_cname" "$PREVIOUS" >/dev/null 2>&1; then
+    OLD_EXTRACT_CNAME="$old_cname"
+  fi
+
+  new_compose="${SCRATCH}/new-compose.yaml"
+  old_compose="${SCRATCH}/old-compose.yaml"
+  if [ -n "$NEW_EXTRACT_CNAME" ] && docker cp "${NEW_EXTRACT_CNAME}:${IMAGE_BUNDLE_DIR}/compose.yaml" "$new_compose" >/dev/null 2>&1 && [ -s "$new_compose" ]; then
+    new_ships=1
+  fi
+  if [ -n "$OLD_EXTRACT_CNAME" ] && docker cp "${OLD_EXTRACT_CNAME}:${IMAGE_BUNDLE_DIR}/compose.yaml" "$old_compose" >/dev/null 2>&1 && [ -s "$old_compose" ]; then
+    old_ships=1
+  fi
+
+  if [ "$new_ships" -eq 1 ] && ! cmp -s "$new_compose" "$COMPOSE_FILE"; then
+    file_hash="$(sha256sum "$COMPOSE_FILE" 2>/dev/null | awk '{print $1}')"
+    if [ "$old_ships" -eq 1 ] && cmp -s "$old_compose" "$COMPOSE_FILE"; then
+      cp -f "$COMPOSE_FILE" "$COMPOSE_BACKUP" || { cleanup_scratch; return 1; }
+      atomic_write "$COMPOSE_FILE" 0644 <"$new_compose" || { cleanup_scratch; return 1; }
+      log "operation ${OP_ID}: reconciled unmodified compose.yaml from candidate bundle"
+    elif [ "$old_ships" -eq 0 ] && [ "$file_hash" = "112c38f263e6df2f4a7969e506e0690cf95bb8f669051738f174d33ff46ff9de" ]; then
+      cp -f "$COMPOSE_FILE" "$COMPOSE_BACKUP" || { cleanup_scratch; return 1; }
+      atomic_write "$COMPOSE_FILE" 0644 <"$new_compose" || { cleanup_scratch; return 1; }
+      log "operation ${OP_ID}: upgraded pre-bundle compose.yaml cleanly"
+    elif [ "$old_ships" -eq 0 ] && grep -Fq 'BRIDGE_FRPS_URL' "$COMPOSE_FILE" && ! grep -Fq 'BRIDGE_FRPS_ENABLED' "$COMPOSE_FILE" && grep -Fq 'read_only: true' "$COMPOSE_FILE" && ! grep -Fq 'DOCKER_HOST' "$COMPOSE_FILE"; then
+      cp -f "$COMPOSE_FILE" "$COMPOSE_BACKUP" || { cleanup_scratch; return 1; }
+      atomic_write "$COMPOSE_FILE" 0644 <"$new_compose" || { cleanup_scratch; return 1; }
+      log "operation ${OP_ID}: upgraded legacy stock compose.yaml for WyTunnel and frps toggle support"
+    else
+      log "operation ${OP_ID}: WARNING: compose.yaml has local edits; leaving host file untouched"
+    fi
+  fi
+
+  local rel dest new_s old_s new_f old_f
+  for rel in scripts/install-wytunnel-bridge.sh scripts/toggle-frps.sh; do
+    dest="${BRIDGE_DIR}/${rel}"
+    new_f="${SCRATCH}/new-${rel##*/}"
+    old_f="${SCRATCH}/old-${rel##*/}"
+    new_s=0
+    old_s=0
+    if [ -n "$NEW_EXTRACT_CNAME" ] && docker cp "${NEW_EXTRACT_CNAME}:${IMAGE_BUNDLE_DIR}/${rel}" "$new_f" >/dev/null 2>&1 && [ -s "$new_f" ]; then
+      new_s=1
+    fi
+    if [ -n "$OLD_EXTRACT_CNAME" ] && docker cp "${OLD_EXTRACT_CNAME}:${IMAGE_BUNDLE_DIR}/${rel}" "$old_f" >/dev/null 2>&1 && [ -s "$old_f" ]; then
+      old_s=1
+    fi
+    [ "$new_s" -eq 1 ] || continue
+    bash -n "$new_f" >/dev/null 2>&1 || continue
+    if [ ! -e "$dest" ] && [ ! -L "$dest" ]; then
+      mkdir -p "$(dirname "$dest")"
+      atomic_write "$dest" 0755 <"$new_f" || true
+      log "operation ${OP_ID}: installed new helper ${rel} from candidate bundle"
+    elif [ -f "$dest" ] && [ ! -L "$dest" ] && ! cmp -s "$new_f" "$dest"; then
+      if [ "$old_s" -eq 1 ] && cmp -s "$old_f" "$dest"; then
+        atomic_write "$dest" 0755 <"$new_f" || true
+        log "operation ${OP_ID}: updated helper ${rel} from candidate bundle"
+      fi
+    fi
+  done
+
+  cleanup_scratch
+  return 0
 }
 
 # One request to the agent on loopback. The bearer token goes in through a curl
@@ -229,8 +334,9 @@ agent_get() {
 # again from the panel and is rolled back. jq is not a host prerequisite; the
 # agent's compact JSON is matched with fixed patterns.
 health_gate() {
-  local image="$1" need="${2:-}" want_id running identity status attempt=0 bridge_id
+  local image="$1" need="${2:-}" want_id running identity status frps_enabled attempt=0 bridge_id
   bridge_id="$(env_value BRIDGE_ID "$ENV_FILE")"
+  frps_enabled="$(env_value BRIDGE_FRPS_ENABLED "$ENV_FILE")"
   GATE_CODE="HEALTH_IMAGE_MISMATCH"
   want_id="$(docker image inspect --format '{{.Id}}' "$image" 2>/dev/null)"
   while [ "$attempt" -lt "$HEALTH_ATTEMPTS" ]; do
@@ -259,9 +365,16 @@ health_gate() {
       GATE_CODE="HEALTH_STATUS_FAILED"
       continue
     fi
-    if ! printf '%s' "$status" | grep -Fq '"frps":{"reachable":true'; then
-      GATE_CODE="HEALTH_FRPS_UNREACHABLE"
-      continue
+    if [ "$frps_enabled" = "false" ]; then
+      if ! printf '%s' "$status" | grep -Eq '"frps":\{"enabled":false,"reachable":false'; then
+        GATE_CODE="HEALTH_FRPS_UNREACHABLE"
+        continue
+      fi
+    else
+      if ! printf '%s' "$status" | grep -Eq '"frps":\{[^}]*"reachable":true'; then
+        GATE_CODE="HEALTH_FRPS_UNREACHABLE"
+        continue
+      fi
     fi
     GATE_CODE=""
     return 0
@@ -289,6 +402,7 @@ rollback() {
   write_journal rolling_back || true
   write_result replacing "$reason"
   restore_pin || { finish rollback_failed ROLLBACK_PIN_UNWRITABLE; return; }
+  restore_compose || true
   if ! write_env_image "$PREVIOUS"; then
     finish rollback_failed ROLLBACK_ENV_UNWRITABLE
     return
@@ -343,18 +457,22 @@ apply() {
   write_journal staging || { finish failed UPDATER_STATE_UNWRITABLE; return; }
   write_result staging || { finish failed UPDATER_STATE_UNWRITABLE; return; }
   # Pulled by digest; the previous image stays (nothing here removes an image).
-  if ! docker pull --platform linux/amd64 "$CANDIDATE"; then
+  if ! docker pull --platform "$AGENT_PLATFORM" "$CANDIDATE"; then
     finish failed PULL_FAILED
     return
   fi
   os_arch="$(docker image inspect --format '{{.Os}}/{{.Architecture}}' "$CANDIDATE" 2>/dev/null)"
-  if [ "$os_arch" != "linux/amd64" ]; then
+  if [ "$os_arch" != "$AGENT_PLATFORM" ]; then
     finish failed IMAGE_PLATFORM_MISMATCH
     return
   fi
 
   write_journal replacing || { finish failed UPDATER_STATE_UNWRITABLE; return; }
   write_result replacing
+  reconcile_bundle_files || {
+    rollback "COMPOSE_RECONCILE_FAILED"
+    return
+  }
   if ! write_env_image "$CANDIDATE"; then
     rollback "AGENT_ENV_UNWRITABLE"
     return
@@ -433,7 +551,7 @@ recover() {
 }
 
 finish_cleanup() {
-  rm -f "$JOURNAL" "$PIN_BACKUP"
+  rm -f "$JOURNAL" "$PIN_BACKUP" "$COMPOSE_BACKUP"
   rm -f -- "${REQUESTS_DIR}/${OP_ID}.json"
 }
 

@@ -3,8 +3,13 @@ import { beforeEach, describe, expect, it, vi } from "vitest";
 
 // vi.mock is hoisted above the imports, so the fakes must be hoisted too.
 const execMock = vi.hoisted(() => vi.fn());
+const execFileMock = vi.hoisted(() => vi.fn());
 const spawnMock = vi.hoisted(() => vi.fn());
-vi.mock("child_process", () => ({ exec: execMock, spawn: spawnMock }));
+vi.mock("child_process", () => ({
+  exec: execMock,
+  execFile: execFileMock,
+  spawn: spawnMock,
+}));
 
 import { AppContract } from "@/contracts/app";
 import { APIError } from "@/utils/APIError";
@@ -39,6 +44,25 @@ const failExec = () => {
 };
 
 /**
+ * Fail every execFile() without leaking raw credentials.
+ */
+const failExecFile = () => {
+  execFileMock.mockImplementation(
+    (file: string, args: string[], _options: unknown, cb: unknown) => {
+      const callback = cb as (e: Error, out: string, err: string) => void;
+      callback(
+        new Error(
+          `Command failed: ${file} ${args.join(" ")}\nwg-quick: parse error`,
+        ),
+        "",
+        "",
+      );
+      return undefined;
+    },
+  );
+};
+
+/**
  * A child process that writes to stderr and exits non-zero. Everything the
  * payload could ride out on - stderr, the exit path, the recorded argv - is
  * observable afterwards through `spawnMock.mock.calls`.
@@ -67,8 +91,10 @@ const failSpawn = (stderrText = "wg-quick: parse error") => {
 
 beforeEach(() => {
   execMock.mockReset();
+  execFileMock.mockReset();
   spawnMock.mockReset();
   failExec();
+  failExecFile();
   failSpawn();
 });
 
@@ -146,11 +172,13 @@ describe("ServerConnection", () => {
 
 describe("the docker-unavailable branches still win", () => {
   it("maps a daemon error to an APIError, not to a redacted Error", async () => {
-    execMock.mockImplementation((_cmd: string, _o: unknown, cb: unknown) => {
-      const callback = cb as (e: Error, out: string, err: string) => void;
-      callback(new Error("Cannot connect to the Docker daemon"), "", "");
-      return undefined;
-    });
+    execFileMock.mockImplementation(
+      (_file: string, _args: string[], _o: unknown, cb: unknown) => {
+        const callback = cb as (e: Error, out: string, err: string) => void;
+        callback(new Error("Cannot connect to the Docker daemon"), "", "");
+        return undefined;
+      },
+    );
     const connection = new AmneziaWgConnection();
 
     const error = await connection
@@ -168,7 +196,9 @@ describe("the docker-unavailable branches still win", () => {
   });
 
   it("maps it on the stdin path too, where the write actually happens", async () => {
-    failSpawn("Cannot connect to the Docker daemon at unix:///var/run/docker.sock");
+    failSpawn(
+      "Cannot connect to the Docker daemon at unix:///var/run/docker.sock",
+    );
     const connection = new AmneziaWgConnection();
 
     const error = await connection
@@ -179,5 +209,71 @@ describe("the docker-unavailable branches still win", () => {
     expect((error as APIError).statusCode).toBe(503);
     expect(error?.message).toBe("swagger.errors.DOCKER_NOT_AVAILABLE");
     expect(String(error)).not.toContain(ENCODED);
+  });
+});
+
+describe("direct execFile invocations prevent orphaned docker CLI children", () => {
+  it.each([
+    {
+      name: "AmneziaWgConnection",
+      container: AppContract.AmneziaWG.DOCKER_CONTAINER,
+      create: () => new AmneziaWgConnection(),
+    },
+    {
+      name: "AmneziaWg2Connection",
+      container: AppContract.AmneziaWG2.DOCKER_CONTAINER,
+      create: () => new AmneziaWg2Connection(),
+    },
+    {
+      name: "AmneziaWg3Connection",
+      container: AppContract.AmneziaWG3.DOCKER_CONTAINER,
+      create: () => new AmneziaWg3Connection(),
+    },
+    {
+      name: "XrayConnection",
+      container: AppContract.Xray.DOCKER_CONTAINER,
+      create: () => new XrayConnection(),
+    },
+  ])("$name.run invokes execFile('docker', ...) directly without a shell", async (fixture) => {
+    execFileMock.mockImplementation(
+      (_file: string, _args: string[], _o: unknown, cb: unknown) => {
+        const callback = cb as (e: Error | null, out: string, err: string) => void;
+        callback(null, "ok", "");
+        return undefined;
+      },
+    );
+    const connection = fixture.create();
+
+    await expect(connection.run("awg show awg0 peers")).resolves.toEqual({
+      stdout: "ok",
+      stderr: "",
+    });
+    expect(execMock).not.toHaveBeenCalled();
+    expect(execFileMock).toHaveBeenCalledWith(
+      "docker",
+      ["exec", fixture.container, "sh", "-lc", "awg show awg0 peers"],
+      expect.objectContaining({ timeout: expect.any(Number) }),
+      expect.any(Function),
+    );
+  });
+
+  it("XrayConnection.restartContainer invokes execFile('docker', ['restart', ...]) directly", async () => {
+    execFileMock.mockImplementation(
+      (_file: string, _args: string[], _o: unknown, cb: unknown) => {
+        const callback = cb as (e: Error | null, out: string, err: string) => void;
+        callback(null, "", "");
+        return undefined;
+      },
+    );
+    const connection = new XrayConnection();
+
+    await expect(connection.restartContainer()).resolves.toBeUndefined();
+    expect(execMock).not.toHaveBeenCalled();
+    expect(execFileMock).toHaveBeenCalledWith(
+      "docker",
+      ["restart", AppContract.Xray.DOCKER_CONTAINER],
+      expect.objectContaining({ timeout: expect.any(Number) }),
+      expect.any(Function),
+    );
   });
 });

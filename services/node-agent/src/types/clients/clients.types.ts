@@ -15,10 +15,19 @@ export enum PeerStatus {
   Disabled = "disabled",
 }
 
+export type ClientEgressHint = {
+  exitIp: string;
+  dnsPrimary?: string;
+  amneziaDnsDnat?: boolean;
+  enforceDnsDnat?: boolean;
+  routingTableId?: number;
+};
+
 export type CreateClientPayload = {
   clientName: string;
   protocol: Protocol;
   expiresAt?: number | null;
+  egress?: ClientEgressHint;
 };
 
 export type DeleteClientPayload = {
@@ -31,6 +40,7 @@ export type UpdateClientPayload = {
   protocol: Protocol;
   status?: PeerStatus;
   expiresAt?: number | null;
+  egress?: ClientEgressHint;
 };
 
 export type CreateClientResult = {
@@ -64,6 +74,7 @@ export interface ClientMutationOptions {
 
 export interface IProtocolService {
   getClients(): Promise<ClientRecord[]>;
+  getClientTunnelIpv4?(clientId: string): Promise<string | null>;
   createClient(
     clientName: string,
     options?: { expiresAt?: number | null },

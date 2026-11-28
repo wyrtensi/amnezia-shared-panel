@@ -92,6 +92,23 @@ describe("buildWidgetData", () => {
     expect(data.c).toBe(Math.floor(Date.parse("2026-11-10T14:51:00Z") / 1000));
   });
 
+  it("marks http level as failed ('1110') when egressMatch is false instead of rendering '1111'", () => {
+    const data = buildWidgetData(
+      input({
+        nodes: [
+          node("DE · Stealth Exit", {
+            status: "failed",
+            levels: levels(true, true, 42),
+            egressMatch: false,
+            failingSince: since,
+            online: 2,
+          }),
+        ],
+      }),
+    );
+    expect(data.n[0]).toEqual(["DE · Stealth Exit", "1110", "2", "", "10.11 15:46"]);
+  });
+
   it("carries the stale and mass flags and the stale limit", () => {
     expect(buildWidgetData(input({ stale: true, mass: true, staleLimitSec: 9_000 }))).toMatchObject({
       s: 1,
@@ -241,5 +258,75 @@ describe("numbers in the widget data", () => {
     for (const row of data.n) for (const field of row) expect(typeof field).toBe("string");
     const outsideStrings = serializeWidgetData(data).replace(/"(?:[^"\\]|\\.)*"/g, '""');
     expect(outsideStrings).not.toMatch(/[0-9.]\s*,\s*-?[0-9]/);
+  });
+});
+
+describe("multi-exit smart collapsing in Telegram widget", () => {
+  it("keeps variants uncollapsed while the payload fits 1024 bytes, and collapses only healthy siblings when it overflows", () => {
+    const small = buildWidgetData(
+      input({
+        nodes: [
+          node("MSK · DE Exit", { entryGroup: "n1:198.51.100.1", entryName: "MSK", online: 2 }),
+          node("MSK · NL Exit", { entryGroup: "n1:198.51.100.1", entryName: "MSK", online: 3 }),
+        ],
+      }),
+    );
+    expect(small.n.map((r) => r[0])).toEqual(["MSK · DE Exit", "MSK · NL Exit"]);
+    expect(small.k).toBe(2);
+    expect(small.t).toBe(2);
+
+    const checkedAt = new Date("2026-11-10T14:51:00Z");
+    const older = new Date("2026-11-10T14:40:00Z");
+    const newer = new Date("2026-11-10T14:49:00Z");
+    const many: WidgetNode[] = [];
+    for (let i = 0; i < 10; i += 1) {
+      const group = `n${i}:198.51.100.${i + 1}`;
+      const entry = `Сервер-${i}`;
+      many.push(
+        node(`${entry} · Exit A`, {
+          entryGroup: group,
+          entryName: entry,
+          online: 2,
+          lastPersonHandshakeAt: older,
+        }),
+        node(`${entry} · Exit B`, {
+          entryGroup: group,
+          entryName: entry,
+          online: 3,
+          lastPersonHandshakeAt: newer,
+        }),
+        node(`${entry} · Exit C`, {
+          entryGroup: group,
+          entryName: entry,
+          online: 1,
+          lastPersonHandshakeAt: null,
+        }),
+      );
+    }
+    // One variant inside Сервер-0 is down: it must stay expanded while its two healthy siblings collapse.
+    many[2] = node("Сервер-0 · Exit C", {
+      entryGroup: "n0:198.51.100.1",
+      entryName: "Сервер-0",
+      status: "failed",
+      levels: levels(true, false),
+      failingSince: since,
+      online: 1,
+      lastPersonHandshakeAt: older,
+    });
+
+    const data = buildWidgetData(input({ checkedAt, nodes: many }));
+    const bytes = Buffer.byteLength(serializeWidgetData(data));
+    expect(bytes).toBeLessThanOrEqual(WIDGET_DATA_MAX_BYTES);
+    expect(data.t).toBe(30);
+    expect(data.k).toBe(29);
+    expect(data.x).toBe(0);
+    // Failed variant is first and kept separate; healthy siblings collapsed to "(×N)".
+    expect(data.n[0]?.[0]).toBe("Сервер-0 · Exit C");
+    expect(data.n).toEqual(
+      expect.arrayContaining([
+        ["Сервер-0 (×2)", "1111", "5", "2"],
+        ["Сервер-1 (×3)", "1111", "6", "2"],
+      ]),
+    );
   });
 });
