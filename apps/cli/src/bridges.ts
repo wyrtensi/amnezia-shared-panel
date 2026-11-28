@@ -40,7 +40,10 @@ type WytunnelConfigView = {
   poolRotateDrainSec?: number;
   keepaliveSec?: number;
   fec?: { k: number; m: number } | null;
-  handshakeMode?: "none" | "tls_client_hello";
+  handshakeMode?: "none" | "tls_client_hello" | "http_ws_upgrade" | "custom";
+  handshakeSni?: string | null;
+  handshakePath?: string | null;
+  handshakePacketData?: string | null;
   ebpfEnabled?: boolean;
 };
 
@@ -699,6 +702,9 @@ const WYTUNNEL_VALUE_FLAGS = [
   "keepalive",
   "fec",
   "handshake",
+  "handshake-sni",
+  "handshake-path",
+  "handshake-data",
   "ebpf",
 ];
 
@@ -741,10 +747,36 @@ function parseWytunnelOptions(args: string[], usage: string): {
   const rawHandshake = flagOf(args, "handshake");
   if (rawHandshake !== undefined) {
     const norm = rawHandshake.trim().toLowerCase();
-    if (norm !== "none" && norm !== "tls_client_hello") {
-      throw new Error(`--handshake expects none or tls_client_hello, got "${rawHandshake}"\n${usage}`);
+    if (
+      norm !== "none" &&
+      norm !== "tls_client_hello" &&
+      norm !== "http_ws_upgrade" &&
+      norm !== "custom"
+    ) {
+      throw new Error(
+        `--handshake expects none, tls_client_hello, http_ws_upgrade, or custom, got "${rawHandshake}"\n${usage}`,
+      );
     }
     cfg.handshakeMode = norm;
+  }
+  const rawSni = flagOf(args, "handshake-sni");
+  if (rawSni !== undefined) {
+    const trimmed = rawSni.trim();
+    const norm = trimmed.toLowerCase();
+    cfg.handshakeSni = norm === "" || norm === "clear" || norm === "none" ? null : trimmed;
+  }
+  const rawPath = flagOf(args, "handshake-path");
+  if (rawPath !== undefined) {
+    const trimmed = rawPath.trim();
+    const norm = trimmed.toLowerCase();
+    cfg.handshakePath = norm === "" || norm === "clear" || norm === "none" ? null : trimmed;
+  }
+  const rawData = flagOf(args, "handshake-data");
+  if (rawData !== undefined) {
+    const trimmed = rawData.trim();
+    const norm = trimmed.toLowerCase();
+    cfg.handshakePacketData =
+      norm === "" || norm === "clear" || norm === "none" ? null : trimmed;
   }
   const rawEbpf = flagOf(args, "ebpf");
   if (rawEbpf !== undefined) {
@@ -1145,7 +1177,7 @@ export async function cmdBridgeRoutes(api: BridgeApi, args: string[]): Promise<v
 
 export async function cmdBridgeRoutePrepare(api: BridgeApi, args: string[]): Promise<void> {
   const usage =
-    "Usage: bridge-route-prepare <node-id> <bridge-id> [--port=<udp port>] [--transport=frp_tcp|wytunnel] [--transport-port=<port>] [--pool-size=<0..64>] [--pool-rotate-interval=<sec>] [--pool-rotate-drain=<sec>] [--keepalive=<sec>] [--fec=<K:M|off>] [--handshake=<none|tls_client_hello>] [--ebpf=on|off] --confirm";
+    "Usage: bridge-route-prepare <node-id> <bridge-id> [--port=<udp port>] [--transport=frp_tcp|wytunnel] [--transport-port=<port>] [--pool-size=<0..64>] [--pool-rotate-interval=<sec>] [--pool-rotate-drain=<sec>] [--keepalive=<sec>] [--fec=<K:M|off>] [--handshake=<none|tls_client_hello|http_ws_upgrade|custom>] [--handshake-sni=<host|clear>] [--handshake-path=<path|clear>] [--handshake-data=<base64|clear>] [--ebpf=on|off] --confirm";
   assertStrictArgs(args, { positionals: 2, valueFlags: ["port", ...WYTUNNEL_VALUE_FLAGS], usage });
   const [rawNode, rawBridge] = positionals(args);
   const nodeId = requireUuid(rawNode, "node-id", usage);
@@ -1185,7 +1217,7 @@ export async function cmdBridgeRoutePrepare(api: BridgeApi, args: string[]): Pro
 
 export async function cmdBridgeRouteTransport(api: BridgeApi, args: string[]): Promise<void> {
   const usage =
-    "Usage: bridge-route-transport <route-id> [--transport=frp_tcp|wytunnel] [--transport-port=<port>] [--pool-size=<0..64>] [--pool-rotate-interval=<sec>] [--pool-rotate-drain=<sec>] [--keepalive=<sec>] [--fec=<K:M|off>] [--handshake=<none|tls_client_hello>] [--ebpf=on|off] --confirm";
+    "Usage: bridge-route-transport <route-id> [--transport=frp_tcp|wytunnel] [--transport-port=<port>] [--pool-size=<0..64>] [--pool-rotate-interval=<sec>] [--pool-rotate-drain=<sec>] [--keepalive=<sec>] [--fec=<K:M|off>] [--handshake=<none|tls_client_hello|http_ws_upgrade|custom>] [--handshake-sni=<host|clear>] [--handshake-path=<path|clear>] [--handshake-data=<base64|clear>] [--ebpf=on|off] --confirm";
   assertStrictArgs(args, { positionals: 1, valueFlags: WYTUNNEL_VALUE_FLAGS, usage });
   const routeId = requireUuid(positionals(args)[0], "route-id", usage);
   const wt = parseWytunnelOptions(args, usage);
@@ -1475,13 +1507,18 @@ export const BRIDGE_USAGE_LINES = `  infrastructure [--json]                 Lis
                                           drafts, retiring ports, verification state
   bridge-route-prepare <node-id> <bridge-id> [--port=<udp>]
                        [--transport=frp_tcp|wytunnel] [--pool-size=10]
-                       [--pool-rotate-interval=2700] [--fec=K:M|off] --confirm
+                       [--pool-rotate-interval=2700] [--fec=K:M|off]
+                       [--handshake=<none|tls_client_hello|http_ws_upgrade|custom>]
+                       [--handshake-sni=<host|clear>] [--handshake-path=<path|clear>]
+                       [--handshake-data=<base64|clear>] --confirm
                                           Reserve a bridge UDP port for a node
   bridge-route-transport <route-id> [--transport=frp_tcp|wytunnel]
                          [--transport-port=<port>] [--pool-size=<0..64>]
                          [--pool-rotate-interval=<sec>] [--pool-rotate-drain=<sec>]
                          [--keepalive=<sec>] [--fec=<K:M|off>]
-                         [--handshake=<none|tls_client_hello>] [--ebpf=on|off] --confirm
+                         [--handshake=<none|tls_client_hello|http_ws_upgrade|custom>]
+                         [--handshake-sni=<host|clear>] [--handshake-path=<path|clear>]
+                         [--handshake-data=<base64|clear>] [--ebpf=on|off] --confirm
                                           Switch route transport or tune WyTunnel pool/rotation
   bridge-route-activate <route-id> --confirm
                                           Switch the route's node onto it (needs a fresh

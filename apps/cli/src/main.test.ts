@@ -2243,6 +2243,76 @@ describe("bridge commands", () => {
     expect(routes).not.toContain("internal");
     expect(routes).not.toContain("observedRegistrationMarker");
   });
+
+  it("bridge-route-transport sends custom handshake mimicry options including SNI, path, and Base64 payload", async () => {
+    const calls = stubFetch([
+      {
+        body: {
+          id: ROUTE,
+          bridgeId: BRIDGE,
+          publicUdpPort: 41004,
+          state: "draft",
+          transport: "wytunnel",
+          transportPort: 14104,
+          transportConfig: {
+            handshakeMode: "http_ws_upgrade",
+            handshakeSni: "ws.example.org",
+            handshakePath: "/ws/awg",
+          },
+          registration: { status: "online" },
+        },
+      },
+      {
+        body: {
+          id: ROUTE,
+          bridgeId: BRIDGE,
+          publicUdpPort: 41004,
+          state: "draft",
+          transport: "wytunnel",
+          transportPort: 14104,
+          transportConfig: {
+            handshakeMode: "custom",
+            handshakeSni: null,
+            handshakePacketData: "FgMBAAUAAAAAAQ==",
+          },
+          registration: { status: "online" },
+        },
+      },
+    ]);
+
+    await run([
+      "bridge-route-transport",
+      ROUTE,
+      "--handshake=http_ws_upgrade",
+      "--handshake-sni=ws.example.org",
+      "--handshake-path=/ws/awg",
+      "--confirm",
+    ]);
+    await run([
+      "bridge-route-transport",
+      ROUTE,
+      "--handshake=custom",
+      "--handshake-sni=clear",
+      "--handshake-data=FgMBAAUAAAAAAQ==",
+      "--confirm",
+    ]);
+
+    expect(calls).toHaveLength(2);
+    expect(JSON.parse(String(calls[0]!.init?.body))).toEqual({
+      transportConfig: {
+        handshakeMode: "http_ws_upgrade",
+        handshakeSni: "ws.example.org",
+        handshakePath: "/ws/awg",
+      },
+    });
+    expect(JSON.parse(String(calls[1]!.init?.body))).toEqual({
+      transportConfig: {
+        handshakeMode: "custom",
+        handshakeSni: null,
+        handshakePacketData: "FgMBAAUAAAAAAQ==",
+      },
+    });
+  });
 });
 
 describe("bridge candidate validation commands", () => {

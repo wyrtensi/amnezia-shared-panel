@@ -56,3 +56,40 @@ test("install-wytunnel-node.sh --remove --dry-run plans clean unit removal", () 
   );
   assert.match(out, /systemctl disable --now amnezia-wytunnel-server@11111111-2222-4333-8444-555555555555\.service/);
 });
+
+test("install-wytunnel-node.sh maps tls_client_hello, http_ws_upgrade, and custom handshake modes", () => {
+  const wsOut = execFileSync(
+    "bash",
+    [
+      nodeScript,
+      "--route-id", ROUTE_ID,
+      "--bridge-ip", "203.0.113.50",
+      "--node-primary-ip", "198.51.100.20",
+      "--remote-port", "41004",
+      "--handshake-mode", "http_ws_upgrade",
+      "--handshake-sni", "ws.example.org",
+      "--handshake-path", "/ws/awg",
+      "--wan-if", "eth0",
+      "--dry-run",
+    ],
+    { encoding: "utf8" },
+  );
+  assert.match(wsOut, /--handshake-mode http-ws --handshake-sni ws\.example\.org --handshake-path \/ws\/awg/);
+
+  assert.throws(() =>
+    execFileSync(
+      "bash",
+      [
+        nodeScript,
+        "--route-id", ROUTE_ID,
+        "--bridge-ip", "203.0.113.50",
+        "--node-primary-ip", "198.51.100.20",
+        "--remote-port", "41004",
+        "--handshake-mode", "tls_client_hello",
+        "--handshake-sni", "bad host;rm",
+        "--dry-run",
+      ],
+      { stdio: "pipe" },
+    ),
+  );
+});

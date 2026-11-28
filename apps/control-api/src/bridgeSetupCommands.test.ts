@@ -160,5 +160,81 @@ describe("bridge setup commands", () => {
     );
     expect(bridgeDryOut).toContain("target_faketcp  = 203.0.113.10:14105");
     expect(bridgeDryOut).toContain("tun             = ptc-5 (10.250.5.1 <-> 10.250.5.2)");
+    expect(nodeDryOut).toContain("--handshake-mode tls13");
+    expect(bridgeDryOut).toContain("--handshake-mode tls13");
+  });
+
+  it("propagates custom handshake SNI, HTTP WebSocket Upgrade, and Base64 custom payload cleanly", () => {
+    const tlsSni = routeSetupCommands({
+      id: ROUTE_ID,
+      bridgeId: BRIDGE_ID,
+      publicUdpPort: 41006,
+      udpPortStart: 41000,
+      bridgePublicIpv4: "198.51.100.7",
+      bridgeControlTcpPort: 7000,
+      nodePublicIp: "203.0.113.11",
+      transport: "wytunnel",
+      transportPort: 14106,
+      transportConfig: {
+        handshakeMode: "tls_client_hello",
+        handshakeSni: "edge.example.net",
+      },
+    });
+    expect(tlsSni.install).toContain("--handshake-mode tls_client_hello");
+    expect(tlsSni.install).toContain("--handshake-sni edge.example.net");
+    expect(tlsSni.bridgeInstall).toContain("--handshake-sni edge.example.net");
+
+    const ws = routeSetupCommands({
+      id: ROUTE_ID,
+      bridgeId: BRIDGE_ID,
+      publicUdpPort: 41006,
+      udpPortStart: 41000,
+      bridgePublicIpv4: "198.51.100.7",
+      bridgeControlTcpPort: 7000,
+      nodePublicIp: "203.0.113.11",
+      transport: "wytunnel",
+      transportPort: 14106,
+      transportConfig: {
+        handshakeMode: "http_ws_upgrade",
+        handshakeSni: "cdn.example.net",
+        handshakePath: "/ws/tunnel",
+      },
+    });
+    const wsNodeArgs = splitArgsFromCommand(
+      ws.dryRun,
+      "/opt/amnezia-panel-node/scripts/install-wytunnel-node.sh",
+    );
+    const wsNodeOut = execFileSync(
+      "bash",
+      [NODE_WYTUNNEL_SCRIPT, ...wsNodeArgs, "--node-primary-ip", "203.0.113.11", "--wan-if", "eth0"],
+      { encoding: "utf8" },
+    );
+    expect(wsNodeOut).toContain("--handshake-mode http-ws --handshake-sni cdn.example.net --handshake-path /ws/tunnel");
+
+    const custom = routeSetupCommands({
+      id: ROUTE_ID,
+      bridgeId: BRIDGE_ID,
+      publicUdpPort: 41006,
+      udpPortStart: 41000,
+      bridgePublicIpv4: "198.51.100.7",
+      bridgeControlTcpPort: 7000,
+      nodePublicIp: "203.0.113.11",
+      transport: "wytunnel",
+      transportPort: 14106,
+      transportConfig: {
+        handshakeMode: "custom",
+        handshakePacketData: "FgMBAAUAAAAAAQ==",
+      },
+    });
+    const customBridgeArgs = splitArgsFromCommand(
+      custom.bridgeDryRun ?? "",
+      "/opt/amnezia-bridge/scripts/install-wytunnel-bridge.sh",
+    );
+    const customBridgeOut = execFileSync(
+      "bash",
+      [BRIDGE_WYTUNNEL_SCRIPT, ...customBridgeArgs, "--wan-if", "eth0"],
+      { encoding: "utf8" },
+    );
+    expect(customBridgeOut).toContain("--handshake-mode custom --handshake-packet-data FgMBAAUAAAAAAQ== --filter-handshake");
   });
 });

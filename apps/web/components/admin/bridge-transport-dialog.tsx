@@ -123,6 +123,8 @@ export function BridgeRouteTransportStrip({
   );
 }
 
+const TLS_HEADER_PRESET_BASE64 = "FgMBAAUAAAAAAQ==";
+
 /**
  * Modal editor for switching a bridge route between FRP (TCP) and WyTunnel
  * (FakeTCP multi-tunnel pool with auto-rotation) and tuning all parameters.
@@ -154,6 +156,9 @@ export function BridgeTransportDialog({
   const [fecPreset, setFecPreset] = React.useState<string>("off");
   const [handshakeMode, setHandshakeMode] =
     React.useState<WytunnelHandshakeMode>("none");
+  const [handshakeSni, setHandshakeSni] = React.useState("");
+  const [handshakePath, setHandshakePath] = React.useState("");
+  const [handshakePacketData, setHandshakePacketData] = React.useState("");
   const [ebpfEnabled, setEbpfEnabled] = React.useState(true);
   const [busy, setBusy] = React.useState(false);
   const [error, setError] = React.useState<string | null>(null);
@@ -169,6 +174,9 @@ export function BridgeTransportDialog({
     setKeepaliveSec(cfg.keepaliveSec);
     setFecPreset(cfg.fec ? `${cfg.fec.k}:${cfg.fec.m}` : "off");
     setHandshakeMode(cfg.handshakeMode);
+    setHandshakeSni(cfg.handshakeSni ?? "");
+    setHandshakePath(cfg.handshakePath ?? "");
+    setHandshakePacketData(cfg.handshakePacketData ?? "");
     setEbpfEnabled(cfg.ebpfEnabled);
     setError(null);
   }, [route]);
@@ -178,6 +186,10 @@ export function BridgeTransportDialog({
     if (!route) return;
     if (transport === "wytunnel" && keepaliveSec !== 0 && (keepaliveSec < 5 || keepaliveSec > 300)) {
       setError(t("bridge.wytunnel.keepaliveInvalid"));
+      return;
+    }
+    if (transport === "wytunnel" && handshakeMode === "custom" && handshakePacketData.trim() === "") {
+      setError(t("bridge.wytunnel.handshakeCustomRequired"));
       return;
     }
     setBusy(true);
@@ -203,6 +215,9 @@ export function BridgeTransportDialog({
                 keepaliveSec,
                 fec,
                 handshakeMode,
+                handshakeSni: handshakeSni.trim() || null,
+                handshakePath: handshakePath.trim() || null,
+                handshakePacketData: handshakePacketData.trim() || null,
                 ebpfEnabled,
               },
             }
@@ -420,10 +435,97 @@ export function BridgeTransportDialog({
                           <SelectItem value="tls_client_hello">
                             {t("bridge.wytunnel.handshakeTls")}
                           </SelectItem>
+                          <SelectItem value="http_ws_upgrade">
+                            {t("bridge.wytunnel.handshakeWs")}
+                          </SelectItem>
+                          <SelectItem value="custom">
+                            {t("bridge.wytunnel.handshakeCustom")}
+                          </SelectItem>
                         </SelectContent>
                       </Select>
                     </div>
                   </div>
+
+                  {handshakeMode === "tls_client_hello" ? (
+                    <div className="space-y-1 rounded border bg-well/60 p-2.5">
+                      <Label htmlFor="wt-hs-sni" className="text-xs">
+                        {t("bridge.wytunnel.handshakeSni")}
+                      </Label>
+                      <Input
+                        id="wt-hs-sni"
+                        className="h-8 font-mono text-xs"
+                        placeholder="edge.example.com"
+                        value={handshakeSni}
+                        onChange={(e) => setHandshakeSni(e.target.value)}
+                      />
+                      <p className="text-[11px] text-muted-foreground">
+                        {t("bridge.wytunnel.handshakeSniHint")}
+                      </p>
+                    </div>
+                  ) : null}
+
+                  {handshakeMode === "http_ws_upgrade" ? (
+                    <div className="space-y-2 rounded border bg-well/60 p-2.5">
+                      <div className="grid gap-2 sm:grid-cols-2">
+                        <div className="space-y-1">
+                          <Label htmlFor="wt-ws-host" className="text-xs">
+                            {t("bridge.wytunnel.handshakeHost")}
+                          </Label>
+                          <Input
+                            id="wt-ws-host"
+                            className="h-8 font-mono text-xs"
+                            placeholder="ws.local"
+                            value={handshakeSni}
+                            onChange={(e) => setHandshakeSni(e.target.value)}
+                          />
+                        </div>
+                        <div className="space-y-1">
+                          <Label htmlFor="wt-ws-path" className="text-xs">
+                            {t("bridge.wytunnel.handshakePath")}
+                          </Label>
+                          <Input
+                            id="wt-ws-path"
+                            className="h-8 font-mono text-xs"
+                            placeholder="/ws"
+                            value={handshakePath}
+                            onChange={(e) => setHandshakePath(e.target.value)}
+                          />
+                        </div>
+                      </div>
+                      <p className="text-[11px] text-muted-foreground">
+                        {t("bridge.wytunnel.handshakeWsHint")}
+                      </p>
+                    </div>
+                  ) : null}
+
+                  {handshakeMode === "custom" ? (
+                    <div className="space-y-1.5 rounded border bg-well/60 p-2.5">
+                      <div className="flex flex-wrap items-center justify-between gap-2">
+                        <Label htmlFor="wt-hs-data" className="text-xs">
+                          {t("bridge.wytunnel.handshakeData")}
+                        </Label>
+                        <Button
+                          type="button"
+                          variant="outline"
+                          size="sm"
+                          className="h-6 px-2 text-[11px]"
+                          onClick={() => setHandshakePacketData(TLS_HEADER_PRESET_BASE64)}
+                        >
+                          {t("bridge.wytunnel.handshakeDataPreset")}
+                        </Button>
+                      </div>
+                      <Input
+                        id="wt-hs-data"
+                        className="h-8 font-mono text-xs"
+                        placeholder={TLS_HEADER_PRESET_BASE64}
+                        value={handshakePacketData}
+                        onChange={(e) => setHandshakePacketData(e.target.value)}
+                      />
+                      <p className="text-[11px] text-muted-foreground">
+                        {t("bridge.wytunnel.handshakeDataHint")}
+                      </p>
+                    </div>
+                  ) : null}
 
                   <label className="flex items-center justify-between gap-2 text-xs">
                     <span>{t("bridge.wytunnel.ebpf")}</span>

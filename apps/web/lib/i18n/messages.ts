@@ -2429,7 +2429,22 @@ const ru = {
   "bridge.wytunnel.fecOff": "Выкл (рекомендуется при потерях < 0.2%)",
   "bridge.wytunnel.handshake": "Мимикрия рукопожатия",
   "bridge.wytunnel.handshakeNone": "Выкл",
-  "bridge.wytunnel.handshakeTls": "TLS ClientHello",
+  "bridge.wytunnel.handshakeTls": "TLS 1.3 ClientHello",
+  "bridge.wytunnel.handshakeWs": "HTTP WebSocket Upgrade",
+  "bridge.wytunnel.handshakeCustom": "Свой пакет (Base64)",
+  "bridge.wytunnel.handshakeSni": "SNI (необязательно)",
+  "bridge.wytunnel.handshakeSniHint":
+    "Оставьте пустым (без SNI, валидно по RFC 6066) или укажите собственный нейтральный поддомен. Не подставляйте чужие бренды.",
+  "bridge.wytunnel.handshakeHost": "Host (необязательно)",
+  "bridge.wytunnel.handshakePath": "HTTP-путь",
+  "bridge.wytunnel.handshakeWsHint":
+    "Маскирует первый обмен под HTTP/1.1 101 Switching Protocols — естественно объясняет бинарный трафик AWG 3.1 на портах 14100+ без TLS SNI.",
+  "bridge.wytunnel.handshakeData": "Полезная нагрузка (Base64, 1–600 байт)",
+  "bridge.wytunnel.handshakeDataPreset": "Заголовок TLS",
+  "bridge.wytunnel.handshakeDataHint":
+    "Статический пакет (например, снятый дамп ClientHello). Фильтруется на входе автоматически.",
+  "bridge.wytunnel.handshakeCustomRequired":
+    "Укажите Base64-пакет для режима «Свой пакет»",
   "bridge.wytunnel.ebpf": "eBPF NIC offload (в прямом режиме)",
   "bridge.wytunnel.advanced": "Дополнительные параметры WyTunnel",
   "bridge.wytunnel.tunnels": "Туннели",
@@ -4850,7 +4865,22 @@ const en = {
   "bridge.wytunnel.fecOff": "Off (recommended while loss < 0.2%)",
   "bridge.wytunnel.handshake": "Handshake mimicry",
   "bridge.wytunnel.handshakeNone": "Off",
-  "bridge.wytunnel.handshakeTls": "TLS ClientHello",
+  "bridge.wytunnel.handshakeTls": "TLS 1.3 ClientHello",
+  "bridge.wytunnel.handshakeWs": "HTTP WebSocket Upgrade",
+  "bridge.wytunnel.handshakeCustom": "Custom packet (Base64)",
+  "bridge.wytunnel.handshakeSni": "SNI (optional)",
+  "bridge.wytunnel.handshakeSniHint":
+    "Leave blank (omitted cleanly per RFC 6066) or use your own neutral subdomain. Avoid third-party brands.",
+  "bridge.wytunnel.handshakeHost": "Host (optional)",
+  "bridge.wytunnel.handshakePath": "HTTP path",
+  "bridge.wytunnel.handshakeWsHint":
+    "Mimics HTTP/1.1 101 Switching Protocols — naturally explains binary AWG 3.1 frames on ports 14100+ without TLS SNI.",
+  "bridge.wytunnel.handshakeData": "Payload (Base64, 1–600 bytes)",
+  "bridge.wytunnel.handshakeDataPreset": "TLS header",
+  "bridge.wytunnel.handshakeDataHint":
+    "Static packet (for example a captured ClientHello dump). Filtered automatically on ingress.",
+  "bridge.wytunnel.handshakeCustomRequired":
+    "Provide a Base64 payload for Custom packet mode",
   "bridge.wytunnel.ebpf": "eBPF NIC offload (direct mode)",
   "bridge.wytunnel.advanced": "Advanced WyTunnel options",
   "bridge.wytunnel.tunnels": "Tunnels",

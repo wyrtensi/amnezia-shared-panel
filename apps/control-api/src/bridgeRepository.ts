@@ -12,6 +12,7 @@ import {
   probeCapabilityInputOf,
   probeLevelsSchema,
   probeSupportsBridgeMeasurement,
+  wytunnelTransportConfigSchema,
   type BridgeRouteCandidateCheckPayload,
   type ProbeCapabilityInput,
   type VerifyBridgeRouteRequest,
@@ -148,6 +149,18 @@ const bridgeNotFound = () => new ApiError(404, "Bridge not found", "BRIDGE_NOT_F
 const routeNotFound = () =>
   new ApiError(404, "Bridge route not found", "BRIDGE_ROUTE_NOT_FOUND");
 const nodeNotFound = () => new ApiError(404, "Node not found", "NODE_NOT_FOUND");
+
+const parseValidatedWytunnelConfig = (candidate: unknown) => {
+  const parsed = wytunnelTransportConfigSchema.safeParse(candidate ?? {});
+  if (!parsed.success) {
+    throw new ApiError(
+      400,
+      parsed.error.issues[0]?.message ?? "Invalid WyTunnel transport configuration",
+      "INVALID_WYTUNNEL_CONFIG",
+    );
+  }
+  return parsed.data;
+};
 
 /**
  * The PG error behind a drizzle error, when it is one. drizzle wraps the
@@ -1360,7 +1373,7 @@ export class PostgresBridgeRepository {
         }
         const transportConfigJson =
           transport === "wytunnel"
-            ? normalizeWytunnelTransportConfig(request.transportConfig)
+            ? parseValidatedWytunnelConfig(request.transportConfig)
             : {};
         await tx.insert(vpnBridgeRoutes).values({
           id: routeId,
@@ -1469,7 +1482,7 @@ export class PostgresBridgeRepository {
         const currentConfig = normalizeWytunnelTransportConfig(route.transportConfigJson);
         const nextTransportConfig =
           nextTransport === "wytunnel"
-            ? normalizeWytunnelTransportConfig({
+            ? parseValidatedWytunnelConfig({
                 ...currentConfig,
                 ...(request.transportConfig ?? {}),
               })

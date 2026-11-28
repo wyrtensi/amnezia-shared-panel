@@ -4,7 +4,9 @@ import {
   bridgePanelDnsHostnameSchema,
   bridgeRouteCandidateCheckPayloadSchema,
   decodeRegistrationMarkerHeader,
+  decodeWytunnelHandshakeBase64Length,
   encodeRegistrationMarkerHeader,
+  normalizeWytunnelTransportConfig,
   PROBE_CAPABILITY_MAX_AGE_MS,
   PROBE_CAPABILITY_REFRESH_MS,
   probeCapabilitiesDue,
@@ -23,6 +25,7 @@ import {
   publicIpv4Schema,
   updateBridgeRequestSchema,
   updateNodeRequestSchema,
+  wytunnelTransportConfigSchema,
 } from "./index.js";
 
 const nonpublic = [
@@ -365,5 +368,60 @@ describe("parseBridgeAgentImageRepository", () => {
       repository: undefined,
       error: expect.stringContaining("differ from NODE_AGENT_UPDATE_REPO") as unknown,
     });
+  });
+});
+
+describe("wytunnelTransportConfigSchema handshake mimicry", () => {
+  it("accepts none, tls_client_hello (with/without SNI), http_ws_upgrade, and valid custom Base64", () => {
+    expect(normalizeWytunnelTransportConfig({}).handshakeMode).toBe("none");
+
+    const tlsNoSni = wytunnelTransportConfigSchema.parse({ handshakeMode: "tls_client_hello" });
+    expect(tlsNoSni.handshakeMode).toBe("tls_client_hello");
+    expect(tlsNoSni.handshakeSni).toBeUndefined();
+
+    const tlsWithSni = wytunnelTransportConfigSchema.parse({
+      handshakeMode: "tls_client_hello",
+      handshakeSni: "edge.example.org",
+    });
+    expect(tlsWithSni.handshakeSni).toBe("edge.example.org");
+
+    const ws = wytunnelTransportConfigSchema.parse({
+      handshakeMode: "http_ws_upgrade",
+      handshakeSni: "ws.example.org",
+      handshakePath: "/ws/v1",
+    });
+    expect(ws.handshakeMode).toBe("http_ws_upgrade");
+    expect(ws.handshakePath).toBe("/ws/v1");
+
+    const custom = wytunnelTransportConfigSchema.parse({
+      handshakeMode: "custom",
+      handshakePacketData: "FgMBAAUAAAAAAQ==",
+    });
+    expect(custom.handshakePacketData).toBe("FgMBAAUAAAAAAQ==");
+    expect(decodeWytunnelHandshakeBase64Length("FgMBAAUAAAAAAQ==")).toBe(10);
+  });
+
+  it("rejects custom mode without payload, oversized Base64, and malformed SNI or path", () => {
+    expect(
+      wytunnelTransportConfigSchema.safeParse({ handshakeMode: "custom" }).success,
+    ).toBe(false);
+    expect(
+      wytunnelTransportConfigSchema.safeParse({
+        handshakeMode: "custom",
+        handshakePacketData: "QUFB".repeat(201), // 603 decoded bytes > 600 limit
+      }).success,
+    ).toBe(false);
+    expect(
+      wytunnelTransportConfigSchema.safeParse({
+        handshakeMode: "tls_client_hello",
+        handshakeSni: "bad host/slash",
+      }).success,
+    ).toBe(false);
+    expect(
+      wytunnelTransportConfigSchema.safeParse({
+        handshakeMode: "http_ws_upgrade",
+        handshakePath: "missing-leading-slash",
+      }).success,
+    ).toBe(false);
   });
 });

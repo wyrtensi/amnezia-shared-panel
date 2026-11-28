@@ -35,6 +35,9 @@ POOL_MODE=1
 KEEPALIVE_SEC=25
 FEC_SPEC="off"
 HANDSHAKE_MODE="none"
+HANDSHAKE_SNI=""
+HANDSHAKE_PATH=""
+HANDSHAKE_PACKET_DATA=""
 EBPF_ENABLED="true"
 WAN_IF=""
 BINARY_DIR=""
@@ -69,7 +72,10 @@ Options:
   --direct-mode               Run server in classic per-client mode (no pool mux)
   --keepalive <sec>           Keepalive seconds (0 or 5..300; default: 25)
   --fec <K:M|off>             Optional Reed-Solomon FEC (default: off)
-  --handshake-mode <mode>     none | tls_client_hello (default: none)
+  --handshake-mode <mode>     none | tls_client_hello | http_ws_upgrade | custom (default: none)
+  --handshake-sni <host>      Optional SNI (tls_client_hello) or Host (http_ws_upgrade)
+  --handshake-path <path>     Optional HTTP path for http_ws_upgrade (default: /ws)
+  --handshake-packet-data <b> Base64 payload for custom handshake mode
   --no-ebpf                   Disable eBPF NIC offload in direct mode
   --wan-if <iface>            Override detected WAN interface
   --keep-frpc                 Do not stop/disable amnezia-frpc@<route-id>.service
@@ -104,6 +110,9 @@ while [ "$#" -gt 0 ]; do
     --keepalive) need_val "$@"; KEEPALIVE_SEC="$2"; shift 2 ;;
     --fec) need_val "$@"; FEC_SPEC="$2"; shift 2 ;;
     --handshake-mode) need_val "$@"; HANDSHAKE_MODE="$2"; shift 2 ;;
+    --handshake-sni) need_val "$@"; HANDSHAKE_SNI="$2"; shift 2 ;;
+    --handshake-path) need_val "$@"; HANDSHAKE_PATH="$2"; shift 2 ;;
+    --handshake-packet-data) need_val "$@"; HANDSHAKE_PACKET_DATA="$2"; shift 2 ;;
     --no-ebpf) EBPF_ENABLED="false"; shift ;;
     --wan-if) need_val "$@"; WAN_IF="$2"; shift 2 ;;
     --keep-frpc) DISABLE_FRPC=0; shift ;;
@@ -177,8 +186,29 @@ if [ "$FEC_SPEC" != "off" ]; then
     exit 2
   fi
 fi
-if [ "$HANDSHAKE_MODE" != "none" ] && [ "$HANDSHAKE_MODE" != "tls_client_hello" ]; then
-  echo "Error: --handshake-mode must be 'none' or 'tls_client_hello'" >&2
+if [ "$HANDSHAKE_MODE" != "none" ] && [ "$HANDSHAKE_MODE" != "tls_client_hello" ] && [ "$HANDSHAKE_MODE" != "http_ws_upgrade" ] && [ "$HANDSHAKE_MODE" != "custom" ]; then
+  echo "Error: --handshake-mode must be 'none', 'tls_client_hello', 'http_ws_upgrade', or 'custom'" >&2
+  exit 2
+fi
+SNI_RE='^[A-Za-z0-9]([A-Za-z0-9-]{0,61}[A-Za-z0-9])?(\.[A-Za-z0-9]([A-Za-z0-9-]{0,61}[A-Za-z0-9])?)*$'
+if [ -n "$HANDSHAKE_SNI" ]; then
+  if [ "${#HANDSHAKE_SNI}" -gt 253 ] || [[ ! "$HANDSHAKE_SNI" =~ $SNI_RE ]]; then
+    echo "Error: --handshake-sni must be a valid ASCII hostname (max 253 chars)" >&2
+    exit 2
+  fi
+fi
+if [ -n "$HANDSHAKE_PATH" ] && [[ ! "$HANDSHAKE_PATH" =~ ^/[A-Za-z0-9._~:@+%,/-]{0,127}$ ]]; then
+  echo "Error: --handshake-path must start with '/' and contain only safe URL path characters" >&2
+  exit 2
+fi
+if [ -n "$HANDSHAKE_PACKET_DATA" ]; then
+  if [ "${#HANDSHAKE_PACKET_DATA}" -lt 2 ] || [ "${#HANDSHAKE_PACKET_DATA}" -gt 808 ] || [[ ! "$HANDSHAKE_PACKET_DATA" =~ ^[A-Za-z0-9+/_-]+={0,2}$ ]]; then
+    echo "Error: --handshake-packet-data must be valid Base64 (max 808 chars)" >&2
+    exit 2
+  fi
+fi
+if [ "$HANDSHAKE_MODE" = "custom" ] && [ -z "$HANDSHAKE_PACKET_DATA" ]; then
+  echo "Error: --handshake-mode custom requires --handshake-packet-data" >&2
   exit 2
 fi
 if [[ ! "$WYTUNNEL_REPO" =~ ^[A-Za-z0-9._-]+/[A-Za-z0-9._-]+$ ]]; then
@@ -246,9 +276,26 @@ fi
 if [ "$EBPF_ENABLED" = "false" ]; then
   EXTRA_ARGS="${EXTRA_ARGS} --no-ebpf"
 fi
-if [ "$HANDSHAKE_MODE" = "tls_client_hello" ]; then
-  EXTRA_ARGS="${EXTRA_ARGS} --handshake-packet-data FgMBAAUAAAAAAQ== --filter-handshake"
-fi
+case "$HANDSHAKE_MODE" in
+  tls_client_hello)
+    EXTRA_ARGS="${EXTRA_ARGS} --handshake-mode tls13"
+    if [ -n "$HANDSHAKE_SNI" ]; then
+      EXTRA_ARGS="${EXTRA_ARGS} --handshake-sni ${HANDSHAKE_SNI}"
+    fi
+    ;;
+  http_ws_upgrade)
+    EXTRA_ARGS="${EXTRA_ARGS} --handshake-mode http-ws"
+    if [ -n "$HANDSHAKE_SNI" ]; then
+      EXTRA_ARGS="${EXTRA_ARGS} --handshake-sni ${HANDSHAKE_SNI}"
+    fi
+    if [ -n "$HANDSHAKE_PATH" ]; then
+      EXTRA_ARGS="${EXTRA_ARGS} --handshake-path ${HANDSHAKE_PATH}"
+    fi
+    ;;
+  custom)
+    EXTRA_ARGS="${EXTRA_ARGS} --handshake-mode custom --handshake-packet-data ${HANDSHAKE_PACKET_DATA} --filter-handshake"
+    ;;
+esac
 EXTRA_ARGS="${EXTRA_ARGS# }"
 
 if [ "$DRY_RUN" -eq 1 ]; then
@@ -263,7 +310,7 @@ if [ "$DRY_RUN" -eq 1 ]; then
   pool_mode       = ${POOL_MODE}
   keepalive       = ${KEEPALIVE_SEC}s
   fec             = ${FEC_SPEC}
-  handshake_mode  = ${HANDSHAKE_MODE}
+  handshake_mode  = ${HANDSHAKE_MODE}${HANDSHAKE_SNI:+ (sni=${HANDSHAKE_SNI})}${HANDSHAKE_PATH:+ (path=${HANDSHAKE_PATH})}
   ebpf            = ${EBPF_ENABLED}
   extra_args      = ${EXTRA_ARGS}
   version         = ${WYTUNNEL_VERSION} (SHA-256 verified via ${WYTUNNEL_SHA256:+--sha256}${WYTUNNEL_SHA256:-release SHA256SUMS})

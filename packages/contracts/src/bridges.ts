@@ -86,6 +86,24 @@ export const BRIDGE_WYTUNNEL_DEFAULT_POOL_SIZE = 10;
 export const BRIDGE_WYTUNNEL_DEFAULT_ROTATE_INTERVAL_SEC = 2700;
 export const BRIDGE_WYTUNNEL_DEFAULT_ROTATE_DRAIN_SEC = 5;
 export const BRIDGE_WYTUNNEL_DEFAULT_KEEPALIVE_SEC = 25;
+export const WYTUNNEL_HANDSHAKE_MAX_BYTES = 600;
+export const WYTUNNEL_HANDSHAKE_DEFAULT_WS_PATH = "/ws";
+
+const WYTUNNEL_HANDSHAKE_SNI_RE =
+  /^[A-Za-z0-9](?:[A-Za-z0-9-]{0,61}[A-Za-z0-9])?(?:\.[A-Za-z0-9](?:[A-Za-z0-9-]{0,61}[A-Za-z0-9])?)*$/;
+const WYTUNNEL_HANDSHAKE_PATH_RE = /^\/[A-Za-z0-9._~:@+%,/-]{0,127}$/;
+const WYTUNNEL_HANDSHAKE_BASE64_RE = /^[A-Za-z0-9+/_-]{2,804}={0,2}$/;
+
+/** Decode length of standard or URL-safe Base64 (matching Rust `decode_base64_lenient`). */
+export const decodeWytunnelHandshakeBase64Length = (raw: string): number | null => {
+  const trimmed = raw.trim();
+  if (!trimmed || !WYTUNNEL_HANDSHAKE_BASE64_RE.test(trimmed)) return null;
+  const unpadded = trimmed.replaceAll("-", "+").replaceAll("_", "/").replace(/=+$/, "");
+  const mod = unpadded.length % 4;
+  if (mod === 1) return null;
+  // Exact decoded byte length for standard unpadded Base64
+  return Math.floor((unpadded.length * 3) / 4);
+};
 
 export const wytunnelFecConfigSchema = z
   .object({
@@ -97,10 +115,15 @@ export const wytunnelFecConfigSchema = z
   });
 export type WytunnelFecConfig = z.infer<typeof wytunnelFecConfigSchema>;
 
-export const wytunnelHandshakeModeSchema = z.enum(["none", "tls_client_hello"]);
+export const wytunnelHandshakeModeSchema = z.enum([
+  "none",
+  "tls_client_hello",
+  "http_ws_upgrade",
+  "custom",
+]);
 export type WytunnelHandshakeMode = z.infer<typeof wytunnelHandshakeModeSchema>;
 
-export const wytunnelTransportConfigSchema = z.object({
+export const wytunnelTransportConfigBaseSchema = z.object({
   /** Persistent pre-warmed FakeTCP tunnel count per node (`0` = on-demand direct mode; `10` recommended). */
   poolSize: z.int().min(0).max(64).default(BRIDGE_WYTUNNEL_DEFAULT_POOL_SIZE),
   /** Seconds between seamless background rotations of the oldest pool tunnel (`0` = disabled). */
@@ -123,9 +146,55 @@ export const wytunnelTransportConfigSchema = z.object({
   fec: wytunnelFecConfigSchema.nullable().default(null),
   /** Optional post-handshake first-packet mimicry (`none` by default). */
   handshakeMode: wytunnelHandshakeModeSchema.default("none"),
+  /** Optional ASCII hostname used as SNI (`tls_client_hello`) or `Host` header (`http_ws_upgrade`). */
+  handshakeSni: z
+    .string()
+    .trim()
+    .min(1)
+    .max(253)
+    .regex(WYTUNNEL_HANDSHAKE_SNI_RE, "Handshake SNI/Host must be a valid ASCII hostname")
+    .nullable()
+    .optional(),
+  /** Optional request path for `http_ws_upgrade` mode (defaults to `/ws`). */
+  handshakePath: z
+    .string()
+    .trim()
+    .min(1)
+    .max(128)
+    .regex(WYTUNNEL_HANDSHAKE_PATH_RE, "Handshake path must start with '/' and contain safe URL characters")
+    .nullable()
+    .optional(),
+  /** Static Base64-encoded payload sent when `handshakeMode === "custom"` (1..=600 bytes). */
+  handshakePacketData: z
+    .string()
+    .trim()
+    .min(2)
+    .max(808)
+    .regex(WYTUNNEL_HANDSHAKE_BASE64_RE, "Handshake packet data must be valid Base64")
+    .refine(
+      (v) => {
+        const len = decodeWytunnelHandshakeBase64Length(v);
+        return len !== null && len >= 1 && len <= WYTUNNEL_HANDSHAKE_MAX_BYTES;
+      },
+      { message: `Handshake packet data must decode to 1..=${WYTUNNEL_HANDSHAKE_MAX_BYTES} bytes` },
+    )
+    .nullable()
+    .optional(),
   /** Enable eBPF `clsact` NIC offload when running direct mode (userspace mux in pool mode). */
   ebpfEnabled: z.boolean().default(true),
 });
+
+export const wytunnelTransportConfigSchema = wytunnelTransportConfigBaseSchema.superRefine(
+  (value, ctx) => {
+    if (value.handshakeMode === "custom" && !value.handshakePacketData) {
+      ctx.addIssue({
+        code: "custom",
+        path: ["handshakePacketData"],
+        message: "Custom handshake mode requires Base64 handshakePacketData",
+      });
+    }
+  },
+);
 export type WytunnelTransportConfig = z.infer<typeof wytunnelTransportConfigSchema>;
 
 export const DEFAULT_WYTUNNEL_TRANSPORT_CONFIG: WytunnelTransportConfig =
@@ -644,14 +713,14 @@ export const prepareBridgeRouteRequestSchema = z.object({
   publicUdpPort: portSchema.optional(),
   transport: bridgeRouteTransportSchema.optional(),
   transportPort: portSchema.optional(),
-  transportConfig: wytunnelTransportConfigSchema.partial().optional(),
+  transportConfig: wytunnelTransportConfigBaseSchema.partial().optional(),
 });
 
 export const updateBridgeRouteTransportRequestSchema = z
   .object({
     transport: bridgeRouteTransportSchema.optional(),
     transportPort: portSchema.nullable().optional(),
-    transportConfig: wytunnelTransportConfigSchema.partial().optional(),
+    transportConfig: wytunnelTransportConfigBaseSchema.partial().optional(),
   })
   .refine(
     (value) =>

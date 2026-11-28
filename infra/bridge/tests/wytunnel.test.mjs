@@ -63,3 +63,46 @@ test("toggle-frps.sh dry-run prints disable and enable plans", () => {
   assert.match(on, /systemctl enable --now amnezia-frps\.service/);
   assert.match(on, /BRIDGE_FRPS_ENABLED=true/);
 });
+
+test("install-wytunnel-bridge.sh supports tls_client_hello, http_ws_upgrade, and custom handshake modes", () => {
+  const tlsOut = execFileSync(
+    "bash",
+    [
+      bridgeScript,
+      "--route-id", ROUTE_ID,
+      "--node-ip", "198.51.100.20",
+      "--remote-port", "41004",
+      "--handshake-mode", "tls_client_hello",
+      "--handshake-sni", "edge.example.org",
+      "--wan-if", "eth0",
+      "--dry-run",
+    ],
+    { encoding: "utf8" },
+  );
+  assert.match(tlsOut, /--handshake-mode tls13 --handshake-sni edge\.example\.org/);
+
+  const wsOut = execFileSync(
+    "bash",
+    [
+      bridgeScript,
+      "--route-id", ROUTE_ID,
+      "--node-ip", "198.51.100.20",
+      "--remote-port", "41004",
+      "--handshake-mode", "http_ws_upgrade",
+      "--handshake-sni", "ws.example.org",
+      "--handshake-path", "/ws/stream",
+      "--wan-if", "eth0",
+      "--dry-run",
+    ],
+    { encoding: "utf8" },
+  );
+  assert.match(wsOut, /--handshake-mode http-ws --handshake-sni ws\.example\.org --handshake-path \/ws\/stream/);
+
+  assert.throws(() =>
+    execFileSync(
+      "bash",
+      [bridgeScript, "--route-id", ROUTE_ID, "--node-ip", "198.51.100.20", "--remote-port", "41004", "--handshake-mode", "custom", "--dry-run"],
+      { stdio: "pipe" },
+    ),
+  );
+});

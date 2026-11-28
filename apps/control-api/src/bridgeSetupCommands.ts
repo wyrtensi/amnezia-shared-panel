@@ -113,6 +113,18 @@ export const routeSetupCommands = (route: RouteSetupInput): RouteSetupCommands =
       ["--keepalive", cfg.keepaliveSec],
       ["--handshake-mode", cfg.handshakeMode],
     ];
+    if (
+      (cfg.handshakeMode === "tls_client_hello" || cfg.handshakeMode === "http_ws_upgrade") &&
+      cfg.handshakeSni
+    ) {
+      nodeArgs.push(["--handshake-sni", cfg.handshakeSni]);
+    }
+    if (cfg.handshakeMode === "http_ws_upgrade" && cfg.handshakePath) {
+      nodeArgs.push(["--handshake-path", cfg.handshakePath]);
+    }
+    if (cfg.handshakeMode === "custom" && cfg.handshakePacketData) {
+      nodeArgs.push(["--handshake-packet-data", cfg.handshakePacketData]);
+    }
     if (fecValue) nodeArgs.push(["--fec", fecValue]);
     const nodeFlags: string[] = [
       cfg.poolSize > 0 ? "--pool-mode" : "--direct-mode",
@@ -131,6 +143,18 @@ export const routeSetupCommands = (route: RouteSetupInput): RouteSetupCommands =
       ["--keepalive", cfg.keepaliveSec],
       ["--handshake-mode", cfg.handshakeMode],
     ];
+    if (
+      (cfg.handshakeMode === "tls_client_hello" || cfg.handshakeMode === "http_ws_upgrade") &&
+      cfg.handshakeSni
+    ) {
+      bridgeArgs.push(["--handshake-sni", cfg.handshakeSni]);
+    }
+    if (cfg.handshakeMode === "http_ws_upgrade" && cfg.handshakePath) {
+      bridgeArgs.push(["--handshake-path", cfg.handshakePath]);
+    }
+    if (cfg.handshakeMode === "custom" && cfg.handshakePacketData) {
+      bridgeArgs.push(["--handshake-packet-data", cfg.handshakePacketData]);
+    }
     if (fecValue) bridgeArgs.push(["--fec", fecValue]);
     const bridgeFlags: string[] = [
       ...(!cfg.ebpfEnabled ? ["--no-ebpf"] : []),
