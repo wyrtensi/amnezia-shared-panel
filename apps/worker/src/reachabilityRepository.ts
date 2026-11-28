@@ -771,14 +771,6 @@ export class PostgresReachabilityRepository
               probeDetail: "auto-rotated exit IP; waiting for measurement",
             })
             .where(eq(nodeVpnEndpoints.id, ep.id));
-          await tx
-            .delete(nodeReachabilityResults)
-            .where(
-              and(
-                eq(nodeReachabilityResults.nodeId, ep.nodeId),
-                eq(nodeReachabilityResults.protocol, "awg3"),
-              ),
-            );
           await tx.insert(auditEvents).values({
             actorType: "system",
             action: "node.endpoint_egress_auto_rotated",
@@ -910,6 +902,17 @@ export class PostgresReachabilityRepository
           detail: state.detail,
           checkedAt: run.now,
         });
+      }
+
+      if (rotatedNodeIds.size > 0) {
+        await tx
+          .delete(nodeReachabilityResults)
+          .where(
+            and(
+              inArray(nodeReachabilityResults.nodeId, [...rotatedNodeIds]),
+              eq(nodeReachabilityResults.protocol, "awg3"),
+            ),
+          );
       }
 
       const bridgeNotices = await this.writeBridgeProbeStates(tx, run, targets, write.outcomes, claimed);

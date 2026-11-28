@@ -10,6 +10,7 @@ import {
   ChevronUp,
   GitBranch,
   Globe,
+  RefreshCw,
   Server,
   ShieldAlert,
   X,
@@ -1687,6 +1688,16 @@ export function FleetTopologyMap({
                                 ) : null}
                               </span>
                               <div className="flex shrink-0 items-center gap-1">
+                                {e.egressAutoRotateEnabled ? (
+                                  <span
+                                    title={t("egress.autoRotateBadge", {
+                                      count: e.egressAutoRotatePoolCount ?? 0,
+                                    })}
+                                    className="inline-flex items-center text-primary"
+                                  >
+                                    <RefreshCw className="size-3 shrink-0" />
+                                  </span>
+                                ) : null}
                                 <OnlineCountPill count={e.onlinePeerCount} t={t} />
                                 <HealthDot health={e.health} />
                               </div>

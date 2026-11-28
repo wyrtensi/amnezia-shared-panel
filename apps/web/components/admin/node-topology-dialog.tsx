@@ -1758,62 +1758,81 @@ export function NodeTopologyDialogBody({
                             })
                           ) : null}
                         </div>
-                        <div className="space-y-1.5 rounded border border-border/60 bg-card/60 p-2">
-                          <div className="flex flex-wrap items-center gap-2">
-                            <label className="flex items-center gap-1.5 font-medium">
-                              <Checkbox
-                                checked={editVarAutoRotate}
-                                onChange={(e) => {
-                                  const next = e.target.checked;
-                                  setEditVarAutoRotate(next);
-                                  if (next && editVarAutoRotatePool.length === 0) {
-                                    setEditVarAutoRotatePool(
-                                      exits.filter((x) => x.enabled).map((x) => x.id),
-                                    );
-                                  }
-                                }}
-                              />
-                              <span>{t("egress.autoRotateLabel")}</span>
-                            </label>
-                            <Hint>{t("egress.autoRotateHint")}</Hint>
-                          </div>
-                          {editVarAutoRotate ? (
-                            <div className="space-y-1 pl-5">
-                              {node.egressMode !== "routed" ? (
-                                <p className="text-[11px] text-warning">
-                                  {t("egress.autoRotateRoutedWarning")}
-                                </p>
-                              ) : null}
-                              <p className="text-[11px] text-muted-foreground">
-                                {t("egress.autoRotatePoolLabel")}:
-                              </p>
-                              <div className="flex flex-wrap gap-x-3 gap-y-1">
-                                {exits.map((exit) => (
-                                  <label key={exit.id} className="flex items-center gap-1.5">
-                                    <Checkbox
-                                      checked={editVarAutoRotatePool.includes(exit.id)}
-                                      onChange={(e) => {
-                                        setEditVarAutoRotatePool((prev) =>
-                                          e.target.checked
-                                            ? [...new Set([...prev, exit.id])]
-                                            : prev.filter((id) => id !== exit.id),
-                                        );
-                                      }}
-                                    />
-                                    <span className="font-mono">
-                                      {exit.label ? `${exit.label} (${exit.ipv4})` : exit.ipv4}
-                                    </span>
-                                  </label>
-                                ))}
-                              </div>
-                              {editVarAutoRotatePool.length === 0 ? (
-                                <p className="text-[11px] text-destructive">
-                                  {t("egress.autoRotatePoolEmpty")}
-                                </p>
-                              ) : null}
+                        {exits.length > 0 || editVarAutoRotate ? (
+                          <div className="space-y-1.5 rounded-md border border-border/60 bg-card p-2.5">
+                            <div className="flex flex-wrap items-center gap-2">
+                              <label className="flex cursor-pointer items-center gap-1.5 font-medium">
+                                <Checkbox
+                                  checked={editVarAutoRotate}
+                                  onChange={(e) => {
+                                    const next = e.target.checked;
+                                    setEditVarAutoRotate(next);
+                                    if (next && editVarAutoRotatePool.length === 0) {
+                                      setEditVarAutoRotatePool(
+                                        exits.filter((x) => x.enabled).map((x) => x.id),
+                                      );
+                                    }
+                                  }}
+                                />
+                                <span>{t("egress.autoRotateLabel")}</span>
+                              </label>
+                              <Hint>{t("egress.autoRotateHint")}</Hint>
                             </div>
-                          ) : null}
-                        </div>
+                            {editVarAutoRotate ? (
+                              <div className="space-y-1.5 pl-5">
+                                {node.egressMode !== "routed" ? (
+                                  <p className="text-[11px] text-warning">
+                                    {t("egress.autoRotateRoutedWarning")}
+                                  </p>
+                                ) : null}
+                                <p className="text-[11px] text-muted-foreground">
+                                  {t("egress.autoRotatePoolLabel")}:
+                                </p>
+                                <div className="flex flex-wrap gap-1.5">
+                                  {exits.map((exit) => (
+                                    <label
+                                      key={exit.id}
+                                      className={cn(
+                                        "inline-flex cursor-pointer items-center gap-1.5 rounded border border-border/60 bg-well px-2 py-1 text-[11px]",
+                                        !exit.enabled && "opacity-60",
+                                      )}
+                                    >
+                                      <Checkbox
+                                        checked={editVarAutoRotatePool.includes(exit.id)}
+                                        onChange={(e) => {
+                                          setEditVarAutoRotatePool((prev) =>
+                                            e.target.checked
+                                              ? [...new Set([...prev, exit.id])]
+                                              : prev.filter((id) => id !== exit.id),
+                                          );
+                                        }}
+                                      />
+                                      <span
+                                        className={cn(
+                                          "inline-block size-2 shrink-0 rounded-full",
+                                          EXIT_HEALTH_DOT[exit.hostState],
+                                        )}
+                                      />
+                                      <span className="font-mono">
+                                        {exit.label ? `${exit.label} (${exit.ipv4})` : exit.ipv4}
+                                      </span>
+                                      {!exit.enabled ? (
+                                        <span className="text-muted-foreground">
+                                          · {t("egress.hostState.disabled")}
+                                        </span>
+                                      ) : null}
+                                    </label>
+                                  ))}
+                                </div>
+                                {editVarAutoRotatePool.length === 0 ? (
+                                  <p className="text-[11px] text-destructive">
+                                    {t("egress.autoRotatePoolEmpty")}
+                                  </p>
+                                ) : null}
+                              </div>
+                            ) : null}
+                          </div>
+                        ) : null}
                         <div className="flex flex-wrap items-center justify-between gap-2">
                           <label className="flex items-center gap-2">
                             <Checkbox
@@ -1958,9 +1977,9 @@ export function NodeTopologyDialogBody({
                   : null}
               </div>
               {exits.length > 0 ? (
-                <div className="space-y-1.5 rounded border border-border/60 bg-well/60 p-2">
+                <div className="space-y-1.5 rounded-md border border-border/60 bg-well p-2.5 shadow-[var(--inset-shadow)]">
                   <div className="flex flex-wrap items-center gap-2">
-                    <label className="flex items-center gap-1.5 font-medium">
+                    <label className="flex cursor-pointer items-center gap-1.5 font-medium">
                       <Checkbox
                         checked={varAutoRotate}
                         onChange={(e) => {
@@ -1978,7 +1997,7 @@ export function NodeTopologyDialogBody({
                     <Hint>{t("egress.autoRotateHint")}</Hint>
                   </div>
                   {varAutoRotate ? (
-                    <div className="space-y-1 pl-5">
+                    <div className="space-y-1.5 pl-5">
                       {node.egressMode !== "routed" ? (
                         <p className="text-[11px] text-warning">
                           {t("egress.autoRotateRoutedWarning")}
@@ -1987,9 +2006,15 @@ export function NodeTopologyDialogBody({
                       <p className="text-[11px] text-muted-foreground">
                         {t("egress.autoRotatePoolLabel")}:
                       </p>
-                      <div className="flex flex-wrap gap-x-3 gap-y-1">
+                      <div className="flex flex-wrap gap-1.5">
                         {exits.map((exit) => (
-                          <label key={exit.id} className="flex items-center gap-1.5">
+                          <label
+                            key={exit.id}
+                            className={cn(
+                              "inline-flex cursor-pointer items-center gap-1.5 rounded border border-border/60 bg-card px-2 py-1 text-[11px]",
+                              !exit.enabled && "opacity-60",
+                            )}
+                          >
                             <Checkbox
                               checked={varAutoRotatePool.includes(exit.id)}
                               onChange={(e) => {
@@ -2000,9 +2025,20 @@ export function NodeTopologyDialogBody({
                                 );
                               }}
                             />
+                            <span
+                              className={cn(
+                                "inline-block size-2 shrink-0 rounded-full",
+                                EXIT_HEALTH_DOT[exit.hostState],
+                              )}
+                            />
                             <span className="font-mono">
                               {exit.label ? `${exit.label} (${exit.ipv4})` : exit.ipv4}
                             </span>
+                            {!exit.enabled ? (
+                              <span className="text-muted-foreground">
+                                · {t("egress.hostState.disabled")}
+                              </span>
+                            ) : null}
                           </label>
                         ))}
                       </div>
