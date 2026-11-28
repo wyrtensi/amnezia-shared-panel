@@ -661,6 +661,9 @@ host (`routed` mode) while defaulting to backwards-compatible `masquerade`:
 | **Allow as Entry (`allowAsEntry`)** | By default the panel warns when an Exit IP matches an Entry IP (to avoid correlating inbound and outbound IPs). Enable it when intentionally reusing the same IP for both Entry and Exit. |
 | **Hot-swap IP (`node-exit-swap`)** | Replaces a burned/blocked Exit IP in place (updates `SNAT` and flushes conntrack) without re-issuing client configs; omitting `--interface`/`--gateway` clears stale overrides for auto-discovery. |
 | **Mode drift (`modeDrift` / `node-egress-adopt`)** | Shown when DB `egressMode` disagrees with live host `observedMode` (for instance after a DB restore). Sync leaves live traffic intact until you either adopt the host mode or push the desired DB mode. |
+| **WyTunnel bridge transport (`wytunnel`)** | Optional FakeTCP alternative to `frp_tcp` on AWG 3.1 bridges ([`wyrtensi/wytunnel`](https://github.com/wyrtensi/wytunnel)). Runs either a persistent multi-stream pool (default `10` tunnels per node with staggered startup, sticky routing, `0 ms` failover, and seamless scheduled rotation) or classic eBPF-offloaded per-client FakeTCP, and lets you stop/disable inactive `frpc`/`frps` so they use zero RAM/CPU. |
+| **Topology map online counters (`onlinePeerCount`)** | Overview Fleet Topology Map cards show recently active keys (`180s` window, excluding probe service keys) across every stage (**Bridge → Node → Entry → Exit**) plus a per-protocol breakdown (`onlineByProtocol`) in the inspector. |
+| **Manual key-update notices (`node-notify-key-update`)** | Operator-triggered banner asking owners of keys issued/downloaded before `notifiedAt` to re-download their config, scoped per **Node**, **Exit IP**, or **Entry → Exit Variant**. Clears automatically only when the key owner views/downloads their own config, without leaking internal Exit IPs or internal node names. |
 
 ---
 

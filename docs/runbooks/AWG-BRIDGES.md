@@ -173,6 +173,17 @@ Never run a pre-bridge worker with the gate on.
    "Waiting for a bridge config" list those users. Regular users never see
    bridge information; only the downloaded config carries the bridge address.
 
+### WyTunnel transport (optional FRP replacement, 10-tunnel pool)
+
+In addition to `frp_tcp` (`frps` / `frpc` over TLS/TCP), bridges and routes optionally support **`wytunnel`** ([`wyrtensi/wytunnel`](https://github.com/wyrtensi/wytunnel)) — a Rust FakeTCP transport combining `oexi/phantun` (eBPF `clsact` + GSO/GRO + optional SIMD FEC), `sagan/phantun` (random ISN, optional handshake mimicry, `--fwmark`), `b1gbr0/phantun` (session recovery + eBPF-aware keepalive), and `mYmNeo/phantun` (ephemeral UDP server sockets without `SO_REUSEPORT`).
+
+- **Persistent 10-tunnel pool (`--pool-size 10`, default):** maintains `10` pre-warmed FakeTCP streams per routed node with staggered startup jitter (`150–300 ms`), sticky client session hashing over a 6-byte binary header (`+6 B` vs `+33%` JSON+base64 in FRP), instant `0 ms` failover if a stream drops, and seamless background rotation (`--pool-rotate-interval 2700`, `--pool-rotate-drain 5`) so individual flows do not stay open forever and users feel zero interruption.
+- **Deterministic host slots:** slot `N = publicUdpPort - udpPortStart` maps to FakeTCP port `14100 + N`, TUN interfaces `ptc-N` (`10.250.N.0/30` on the bridge) and `pts-N` (`10.251.N.0/30` on the node), with isolated `--no-nftables` rules compatible with dual-IP node routing and `ufw`/Docker. Only the bridge's public IPv4 is DNAT-allowed to reach `14100 + N` on the node.
+- **Zero-overhead inactive FRP:** switching a node route to WyTunnel prints `systemctl disable --now amnezia-frpc@<route-id>.service` for the node. When no active FRP routes remain on a bridge, set `frps` disabled (`bridge-update <id> --frps=off` or the bridge card in the UI) and run `/opt/amnezia-bridge/scripts/toggle-frps.sh --disable` on the bridge host so `amnezia-frps.service` consumes **0 RAM / 0 CPU** without triggering `FRPS_UNREACHABLE` alerts.
+- **Two migration patterns:**
+  1. **Zero-downtime new route:** `amnezia-panel bridge-route-prepare <node-id> <bridge-id> --transport=wytunnel --pool-size=10 --confirm`, run the printed node and bridge WyTunnel installers, wait for `registration: online`, verify via probe or `bridge-route-test-config`, then `bridge-route-activate`.
+  2. **In-place same-port cutover:** pre-install `install-wytunnel-node.sh`, run `amnezia-panel bridge-route-transport <route-id> --transport=wytunnel --confirm` and execute the printed node/bridge cutover and `disableFrpc` commands. Roll back in seconds by switching `--transport=frp_tcp` and re-enabling `frpc`.
+
 ### Panel door through a bridge (optional)
 
 Users who cannot reach the panel's own hostname can open it through a bridge
