@@ -21,6 +21,7 @@ import {
   type NodePublicEndpointMutationResult,
   type UpdateNodeRequest,
   type DeleteBridgeResult,
+  type WytunnelRelease,
 } from "@amnezia/contracts";
 import { ApiClientError } from "@/lib/api";
 
@@ -221,3 +222,9 @@ export const fetchTestConfig = async (
     ),
   };
 };
+
+export const getWytunnelRelease = (request: Requester) =>
+  request<WytunnelRelease>("/api/admin/wytunnel/release");
+
+export const refreshWytunnelRelease = (request: Requester) =>
+  request<WytunnelRelease>("/api/admin/wytunnel/release/refresh", { method: "POST" });

@@ -19,6 +19,7 @@ import type {
   BridgeFrpsTlsStatus,
   BridgePanelDnsStatus,
   InfrastructureItem,
+  WytunnelRelease,
 } from "@amnezia/contracts";
 
 import { resolveSecret } from "./apiKey.js";
@@ -1155,6 +1156,30 @@ export async function cmdBridgeRollbackPreflight(api: BridgeApi, args: string[])
   }
 }
 
+export async function cmdWytunnelRelease(api: BridgeApi, args: string[]): Promise<void> {
+  const usage = "Usage: wytunnel-release [--refresh] [--json]";
+  assertStrictArgs(args, { positionals: 0, boolFlags: ["refresh"], usage });
+  const refresh = args.includes("--refresh");
+  const release = await api<WytunnelRelease>(
+    refresh ? "/api/admin/wytunnel/release/refresh" : "/api/admin/wytunnel/release",
+    refresh ? { method: "POST" } : undefined,
+  );
+  if (args.includes("--json")) return json(release);
+  console.log(`wytunnel release: ${release.tag} (${release.source})`);
+  console.log(`  repository: ${release.repository}`);
+  console.log(`  url:        ${release.htmlUrl}`);
+  if (release.publishedAt) console.log(`  published:  ${release.publishedAt}`);
+  for (const arch of ["amd64", "arm64"] as const) {
+    const asset = release.assets[arch];
+    if (asset) {
+      console.log(`  ${arch}:     ${asset.name}${asset.sha256 ? `  sha256=${asset.sha256}` : ""}`);
+    }
+  }
+  console.log(
+    "Setup commands returned by bridge-routes / bridge-route-transport include --version for atomic upgrade with rollback.",
+  );
+}
+
 export async function cmdBridgeDelete(api: BridgeApi, args: string[]): Promise<void> {
   const usage = "Usage: bridge-delete <bridge-id> --confirm";
   assertStrictArgs(args, { positionals: 1, usage });
@@ -1466,6 +1491,7 @@ export const BRIDGE_COMMANDS: ReadonlyMap<
   ["bridge-eligibility", cmdBridgeEligibility],
   ["bridge-agent-update", cmdBridgeAgentUpdate],
   ["bridge-agent-log", cmdBridgeAgentLog],
+  ["wytunnel-release", cmdWytunnelRelease],
   ["bridge-rollback-preflight", cmdBridgeRollbackPreflight],
   ["bridge-delete", cmdBridgeDelete],
   ["bridge-routes", cmdBridgeRoutes],
@@ -1500,6 +1526,7 @@ export const BRIDGE_USAGE_LINES = `  infrastructure [--json]                 Lis
                                           approved image on offer; --confirm requests that
                                           update (one outstanding operation per bridge)
   bridge-agent-log <bridge-id> [--json]   The current or last agent update and its history
+  wytunnel-release [--refresh] [--json]   Show (or force-refresh) active WyTunnel GitHub release & SHA-256 checksums
   bridge-rollback-preflight [--json]      Before rolling back to a pre-bridge release: active
                                           assignments, outstanding agent updates, pending jobs
   bridge-delete <bridge-id> --confirm     Delete an empty bridge (BRIDGE_HAS_ROUTES otherwise)

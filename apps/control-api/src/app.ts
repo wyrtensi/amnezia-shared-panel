@@ -31,6 +31,8 @@ import {
   BRIDGE_REGISTRATION_MARKER_HEADER,
   bridgeTestConfigQuerySchema,
   encodeRegistrationMarkerHeader,
+  parseWytunnelReleaseRepo,
+  parseWytunnelReleaseVersion,
   requestBridgeAgentUpdateSchema,
   verifyBridgeRouteRequestSchema,
   adminReassignKeyEndpointRequestSchema,
@@ -57,6 +59,10 @@ import {
   createClientReleaseResolver,
   type ClientReleaseResolver,
 } from "./clientReleases.js";
+import {
+  createWytunnelReleaseResolver,
+  type WytunnelReleaseResolver,
+} from "./wytunnelReleases.js";
 
 type Environment = "development" | "test" | "production";
 
@@ -100,6 +106,11 @@ export type BuildAppOptions = {
    * answer and falls back to version-free links when GitHub is unreachable.
    */
   clientReleaseResolver?: ClientReleaseResolver;
+  /**
+   * Resolves the newest WyTunnel binary release for admin bridge/node setup
+   * commands and update badges. Injectable for tests.
+   */
+  wytunnelReleaseResolver?: WytunnelReleaseResolver;
 };
 
 const idParamsSchema = z.object({ id: z.uuid() });
@@ -165,6 +176,7 @@ export const buildApp = async ({
   allowDevIdentity,
   updateController,
   clientReleaseResolver,
+  wytunnelReleaseResolver,
 }: BuildAppOptions) => {
   // `loggerInstance` and `logger` are mutually exclusive in Fastify 5, so an
   // injected logger replaces the flag rather than sitting beside it.
@@ -183,6 +195,13 @@ export const buildApp = async ({
       version: versionInfo(),
     });
   const clientReleases = clientReleaseResolver ?? createClientReleaseResolver();
+  const wytunnelReleases =
+    wytunnelReleaseResolver ??
+    createWytunnelReleaseResolver({
+      repository: parseWytunnelReleaseRepo(process.env.WYTUNNEL_RELEASE_REPO),
+      pinnedVersion: parseWytunnelReleaseVersion(process.env.WYTUNNEL_RELEASE_VERSION),
+      githubToken: process.env.GITHUB_TOKEN,
+    });
 
   await app.register(helmet, { contentSecurityPolicy: false });
 
@@ -458,6 +477,14 @@ export const buildApp = async ({
     // user and may cause an outbound request — so admin only, unlike the read.
     adminFor(request);
     return clientReleases.refresh();
+  });
+  app.get("/api/admin/wytunnel/release", async (request) => {
+    adminFor(request);
+    return wytunnelReleases.get();
+  });
+  app.post("/api/admin/wytunnel/release/refresh", async (request) => {
+    adminFor(request);
+    return wytunnelReleases.refresh();
   });
   app.get("/api/admin/overview", async (request) =>
     service.getAdminOverview(adminFor(request)),

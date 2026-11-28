@@ -2459,6 +2459,11 @@ const ru = {
   "bridge.wytunnel.keepaliveInvalid": "Keepalive должен быть 0 (выкл) или от 5 до 300 секунд",
   "bridge.wytunnel.disableFrpcCmd": "Отключить неактивный frpc на ноде (0 RAM / 0 CPU)",
   "bridge.wytunnel.disableFrpsCmd": "Отключить неактивный frps на мосте (0 RAM / 0 CPU)",
+  "bridge.wytunnel.releaseLabel": "WyTunnel {tag}",
+  "bridge.wytunnel.releaseRefreshAria": "Проверить новый релиз WyTunnel",
+  "bridge.wytunnel.releaseRefreshed": "Актуальный релиз WyTunnel: {tag}",
+  "bridge.wytunnel.upgradeHint":
+    "Доступно обновление WyTunnel до v{target}. Повторно выполните команды настройки маршрута на мосте и ноде для безопасного обновления.",
   "bridge.frps.enabledLabel": "Использовать frps на этом мосте",
   "bridge.frps.enabledHint":
     "Отключите, если все маршруты моста работают через WyTunnel — frps не будет потреблять RAM и CPU.",
@@ -4895,6 +4900,11 @@ const en = {
   "bridge.wytunnel.keepaliveInvalid": "Keepalive must be 0 (off) or between 5 and 300 seconds",
   "bridge.wytunnel.disableFrpcCmd": "Disable inactive frpc on node (0 RAM / 0 CPU)",
   "bridge.wytunnel.disableFrpsCmd": "Disable inactive frps on bridge (0 RAM / 0 CPU)",
+  "bridge.wytunnel.releaseLabel": "WyTunnel {tag}",
+  "bridge.wytunnel.releaseRefreshAria": "Check for a newer WyTunnel release",
+  "bridge.wytunnel.releaseRefreshed": "Resolved WyTunnel release: {tag}",
+  "bridge.wytunnel.upgradeHint":
+    "WyTunnel v{target} is available. Re-run the route setup commands on the bridge and node to upgrade atomically.",
   "bridge.frps.enabledLabel": "Run frps on this bridge",
   "bridge.frps.enabledHint":
     "Turn off on WyTunnel-only bridges so frps consumes 0 RAM and 0 CPU.",

@@ -2313,6 +2313,49 @@ describe("bridge commands", () => {
       },
     });
   });
+
+  it("wytunnel-release prints cached release or refreshes when --refresh is passed", async () => {
+    const calls = stubFetch([
+      {
+        body: {
+          repository: "wyrtensi/wytunnel",
+          tag: "v0.2.0",
+          version: "0.2.0",
+          htmlUrl: "https://github.com/wyrtensi/wytunnel/releases/tag/v0.2.0",
+          publishedAt: "2026-11-28T14:00:00Z",
+          source: "github",
+          assets: {
+            amd64: {
+              name: "wytunnel-linux-amd64-musl.tar.gz",
+              url: "https://github.com/wyrtensi/wytunnel/releases/download/v0.2.0/wytunnel-linux-amd64-musl.tar.gz",
+              size: 1024,
+              sha256: "a".repeat(64),
+            },
+            arm64: null,
+          },
+        },
+      },
+      {
+        body: {
+          repository: "wyrtensi/wytunnel",
+          tag: "v0.2.0",
+          version: "0.2.0",
+          htmlUrl: "https://github.com/wyrtensi/wytunnel/releases/tag/v0.2.0",
+          publishedAt: "2026-11-28T14:00:00Z",
+          source: "github",
+          assets: { amd64: null, arm64: null },
+        },
+      },
+    ]);
+
+    const out = await run(["wytunnel-release"]);
+    expect(out).toContain("wytunnel release: v0.2.0 (github)");
+    expect(out).toContain(`sha256=${"a".repeat(64)}`);
+    await run(["wytunnel-release", "--refresh"]);
+    expect(calls[0]!.url).toContain("/api/admin/wytunnel/release");
+    expect(calls[1]!.url).toContain("/api/admin/wytunnel/release/refresh");
+    expect(calls[1]!.init?.method).toBe("POST");
+  });
 });
 
 describe("bridge candidate validation commands", () => {

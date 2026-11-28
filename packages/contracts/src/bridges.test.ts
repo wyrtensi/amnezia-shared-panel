@@ -6,7 +6,10 @@ import {
   decodeRegistrationMarkerHeader,
   decodeWytunnelHandshakeBase64Length,
   encodeRegistrationMarkerHeader,
+  isWytunnelVersionOutdated,
   normalizeWytunnelTransportConfig,
+  parseWytunnelReleaseRepo,
+  parseWytunnelReleaseVersion,
   PROBE_CAPABILITY_MAX_AGE_MS,
   PROBE_CAPABILITY_REFRESH_MS,
   probeCapabilitiesDue,
@@ -25,6 +28,8 @@ import {
   publicIpv4Schema,
   updateBridgeRequestSchema,
   updateNodeRequestSchema,
+  WYTUNNEL_DEFAULT_REPO,
+  wytunnelReleaseSchema,
   wytunnelTransportConfigSchema,
 } from "./index.js";
 
@@ -423,5 +428,40 @@ describe("wytunnelTransportConfigSchema handshake mimicry", () => {
         handshakePath: "missing-leading-slash",
       }).success,
     ).toBe(false);
+  });
+});
+
+describe("wytunnel release metadata and semver comparison", () => {
+  it("parses WYTUNNEL_RELEASE_REPO and WYTUNNEL_RELEASE_VERSION safely", () => {
+    expect(parseWytunnelReleaseRepo(undefined)).toBe(WYTUNNEL_DEFAULT_REPO);
+    expect(parseWytunnelReleaseRepo("bad repo name")).toBe(WYTUNNEL_DEFAULT_REPO);
+    expect(parseWytunnelReleaseRepo(" my-org/wytunnel-fork ")).toBe("my-org/wytunnel-fork");
+
+    expect(parseWytunnelReleaseVersion(undefined)).toBeUndefined();
+    expect(parseWytunnelReleaseVersion("not-a-ver")).toBeUndefined();
+    expect(parseWytunnelReleaseVersion("0.2.0")).toBe("v0.2.0");
+    expect(parseWytunnelReleaseVersion(" v1.2.3-rc.1 ")).toBe("v1.2.3-rc.1");
+  });
+
+  it("compares installed WyTunnel version against offered release", () => {
+    expect(isWytunnelVersionOutdated("0.1.0", "v0.2.0")).toBe(true);
+    expect(isWytunnelVersionOutdated("0.1.0", "0.1.1")).toBe(true);
+    expect(isWytunnelVersionOutdated("0.2.0-rc.1", "0.2.0")).toBe(true);
+    expect(isWytunnelVersionOutdated("0.2.0", "v0.2.0")).toBe(false);
+    expect(isWytunnelVersionOutdated("0.3.0", "0.2.0")).toBe(false);
+    expect(isWytunnelVersionOutdated(null, "0.2.0")).toBe(false);
+  });
+
+  it("validates wytunnelReleaseSchema payloads", () => {
+    const parsed = wytunnelReleaseSchema.parse({
+      repository: "wyrtensi/wytunnel",
+      tag: "v0.1.0",
+      version: "0.1.0",
+      htmlUrl: "https://github.com/wyrtensi/wytunnel/releases/tag/v0.1.0",
+      publishedAt: null,
+      source: "fallback",
+      assets: { amd64: null, arm64: null },
+    });
+    expect(parsed.tag).toBe("v0.1.0");
   });
 });

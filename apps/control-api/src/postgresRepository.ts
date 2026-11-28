@@ -77,6 +77,7 @@ import type {
   UpdateBridgeRequest,
   UpdateBridgeRouteTransportRequest,
   UpdateNodeIpv6RejectStubRequest,
+  WytunnelRelease,
 } from "@amnezia/contracts";
 import {
   BRIDGE_MANAGEMENT_HOSTS_DEFAULT,
@@ -738,6 +739,8 @@ export type PostgresRepositoryOptions = {
   /** HTTP client for bridge-agent calls at enrollment; tests inject one. */
   bridgeAgentFetch?: typeof fetch;
   bridgeAgentTimeoutMs?: number;
+  /** Optional resolver supplying the current WyTunnel release repo + tag for setup commands. */
+  wytunnelRelease?: () => Promise<WytunnelRelease>;
 };
 
 const BIGINT_METRIC_FIELDS = [
@@ -822,6 +825,7 @@ export class PostgresControlRepository implements ControlRepository {
       managementHosts: options.bridgeManagementHosts ?? BRIDGE_MANAGEMENT_HOSTS_DEFAULT,
       bridgeAgentFetch: options.bridgeAgentFetch,
       bridgeAgentTimeoutMs: options.bridgeAgentTimeoutMs,
+      wytunnelRelease: options.wytunnelRelease,
     });
   }
 

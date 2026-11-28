@@ -8,6 +8,7 @@ import {
   BRIDGE_WYTUNNEL_DEFAULT_POOL_SIZE,
   BRIDGE_WYTUNNEL_DEFAULT_ROTATE_DRAIN_SEC,
   BRIDGE_WYTUNNEL_DEFAULT_ROTATE_INTERVAL_SEC,
+  isWytunnelVersionOutdated,
   normalizeWytunnelTransportConfig,
   type BridgeRouteTelemetry,
   type BridgeRouteTransport,
@@ -69,12 +70,14 @@ export function BridgeRouteTransportStrip({
   transportPort,
   transportConfig,
   telemetry,
+  latestWytunnelVersion,
   t,
 }: {
   transport?: BridgeRouteTransport;
   transportPort?: number | null;
   transportConfig?: WytunnelTransportConfig;
   telemetry?: BridgeRouteTelemetry | null;
+  latestWytunnelVersion?: string | null;
   t: Translate;
 }) {
   if (transport !== "wytunnel") {
@@ -93,6 +96,7 @@ export function BridgeRouteTransportStrip({
         : "direct";
   const rtt =
     telemetry?.poolRttMs != null ? `${Math.round(telemetry.poolRttMs)} ms` : null;
+  const outdated = isWytunnelVersionOutdated(telemetry?.version, latestWytunnelVersion);
   return (
     <span className="inline-flex flex-wrap items-center gap-1">
       <Badge variant="secondary" className="gap-1 font-mono text-[11px]">
@@ -103,6 +107,15 @@ export function BridgeRouteTransportStrip({
         {poolHealth}
         {rtt ? ` · ${rtt}` : ""}
       </Badge>
+      {outdated && telemetry?.version && latestWytunnelVersion ? (
+        <Badge
+          variant="warning"
+          className="font-mono text-[10px]"
+          title={t("bridge.wytunnel.upgradeHint", { target: latestWytunnelVersion })}
+        >
+          v{telemetry.version} → v{latestWytunnelVersion}
+        </Badge>
+      ) : null}
       {telemetry?.rotationsTotal ? (
         <span
           className="text-[11px] text-muted-foreground tabular"

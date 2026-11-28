@@ -1,4 +1,5 @@
 import {
+  WYTUNNEL_DEFAULT_REPO,
   deriveWytunnelTransportPort,
   normalizeWytunnelTransportConfig,
   type BridgeRouteTransport,
@@ -93,6 +94,8 @@ export type RouteSetupInput = {
   transportPort?: number | null;
   transportConfig?: Partial<WytunnelTransportConfig> | null;
   bridgeFrpsEnabled?: boolean;
+  wytunnelRepo?: string | null;
+  wytunnelVersion?: string | null;
 };
 
 export const routeSetupCommands = (route: RouteSetupInput): RouteSetupCommands => {
@@ -103,6 +106,8 @@ export const routeSetupCommands = (route: RouteSetupInput): RouteSetupCommands =
       route.transportPort ?? deriveWytunnelTransportPort(route.publicUdpPort, udpPoolStart);
     const fecValue = cfg.fec ? `${cfg.fec.k}:${cfg.fec.m}` : null;
     const nodeTargetIp = route.nodePublicIp?.trim() || "<NODE_PUBLIC_IP>";
+    const wytunnelRepo = route.wytunnelRepo?.trim();
+    const wytunnelVersion = route.wytunnelVersion?.trim();
 
     const nodeArgs: Array<[string, string | number]> = [
       ["--route-id", route.id],
@@ -113,6 +118,12 @@ export const routeSetupCommands = (route: RouteSetupInput): RouteSetupCommands =
       ["--keepalive", cfg.keepaliveSec],
       ["--handshake-mode", cfg.handshakeMode],
     ];
+    if (wytunnelRepo && wytunnelRepo !== WYTUNNEL_DEFAULT_REPO) {
+      nodeArgs.push(["--repo", wytunnelRepo]);
+    }
+    if (wytunnelVersion) {
+      nodeArgs.push(["--version", wytunnelVersion]);
+    }
     if (
       (cfg.handshakeMode === "tls_client_hello" || cfg.handshakeMode === "http_ws_upgrade") &&
       cfg.handshakeSni
@@ -143,6 +154,12 @@ export const routeSetupCommands = (route: RouteSetupInput): RouteSetupCommands =
       ["--keepalive", cfg.keepaliveSec],
       ["--handshake-mode", cfg.handshakeMode],
     ];
+    if (wytunnelRepo && wytunnelRepo !== WYTUNNEL_DEFAULT_REPO) {
+      bridgeArgs.push(["--repo", wytunnelRepo]);
+    }
+    if (wytunnelVersion) {
+      bridgeArgs.push(["--version", wytunnelVersion]);
+    }
     if (
       (cfg.handshakeMode === "tls_client_hello" || cfg.handshakeMode === "http_ws_upgrade") &&
       cfg.handshakeSni

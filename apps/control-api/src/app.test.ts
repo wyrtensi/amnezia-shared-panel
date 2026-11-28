@@ -1681,6 +1681,62 @@ describe("client release routes", () => {
     expect(clientReleaseResolver.refresh).not.toHaveBeenCalled();
     await app.close();
   });
+
+  it("exposes GET /api/admin/wytunnel/release and POST /api/admin/wytunnel/release/refresh for admins only", async () => {
+    const wtSnapshot = {
+      repository: "wyrtensi/wytunnel",
+      tag: "v0.2.0",
+      version: "0.2.0",
+      htmlUrl: "https://github.com/wyrtensi/wytunnel/releases/tag/v0.2.0",
+      publishedAt: "2026-11-28T14:00:00Z",
+      source: "github" as const,
+      assets: { amd64: null, arm64: null },
+    };
+    const wytunnelReleaseResolver = {
+      get: vi.fn(() => Promise.resolve(wtSnapshot)),
+      refresh: vi.fn(() => Promise.resolve(wtSnapshot)),
+    };
+    const adminService = createService();
+    const admin = { ...user, role: "admin" as const };
+    vi.mocked(adminService.resolveIdentity).mockResolvedValue(admin);
+    const adminApp = await buildApp({
+      service: adminService,
+      environment: "development",
+      allowDevIdentity: true,
+      wytunnelReleaseResolver,
+    });
+
+    const getRes = await adminApp.inject({
+      method: "GET",
+      url: "/api/admin/wytunnel/release",
+      headers: { "x-dev-user-email": admin.email },
+    });
+    expect(getRes.statusCode).toBe(200);
+    expect(getRes.json()).toEqual(wtSnapshot);
+
+    const refreshRes = await adminApp.inject({
+      method: "POST",
+      url: "/api/admin/wytunnel/release/refresh",
+      headers: { "x-dev-user-email": admin.email },
+    });
+    expect(refreshRes.statusCode).toBe(200);
+    expect(wytunnelReleaseResolver.refresh).toHaveBeenCalledTimes(1);
+    await adminApp.close();
+
+    const userApp = await buildApp({
+      service: createService(),
+      environment: "development",
+      allowDevIdentity: true,
+      wytunnelReleaseResolver,
+    });
+    const userForbidden = await userApp.inject({
+      method: "GET",
+      url: "/api/admin/wytunnel/release",
+      headers: { "x-dev-user-email": user.email },
+    });
+    expect(userForbidden.statusCode).toBe(403);
+    await userApp.close();
+  });
 });
 
 describe("service check routes", () => {

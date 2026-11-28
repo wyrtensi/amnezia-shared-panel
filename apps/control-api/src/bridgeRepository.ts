@@ -31,6 +31,7 @@ import {
   type PrepareBridgeRouteRequest,
   type PrepareBridgeRouteResult,
   type ReleaseBridgeRouteResult,
+  type WytunnelRelease,
   type BridgeAgentOfferedImage,
   type BridgeAgentUpdateSummary,
   type BridgeAgentUpdateView,
@@ -124,6 +125,8 @@ export type BridgeRepositoryOptions = {
     publicIpv4: string,
     configuredHostname?: string | null,
   ) => Promise<BridgePanelDnsStatus | undefined>;
+  /** Optional resolver supplying the current WyTunnel release repo + tag for setup commands. */
+  wytunnelRelease?: () => Promise<WytunnelRelease>;
 };
 
 /** A held route as the test-config preview needs it. */
@@ -253,6 +256,7 @@ const toNodeRoute = (
   staleMs: number,
   awgPath: AwgPathEvidence,
   nodePublicIp: string | null = null,
+  wytunnelRel?: WytunnelRelease | null,
 ): NodeBridgeRoute => {
   const registration = routeRegistration(route, bridge, now, staleMs);
   const transportConfig =
@@ -302,6 +306,8 @@ const toNodeRoute = (
       transportPort: route.transportPort,
       transportConfig,
       bridgeFrpsEnabled: bridge.frpsEnabled,
+      wytunnelRepo: wytunnelRel?.repository,
+      wytunnelVersion: wytunnelRel?.tag,
     }),
   };
 };
@@ -577,6 +583,11 @@ export class PostgresBridgeRepository {
       this.db,
       rows.filter(({ route }) => route.state === "active").map(({ route }) => route.nodeId),
     );
+    const hasWytunnel = rows.some(({ route }) => route.transport === "wytunnel");
+    const wtRel =
+      hasWytunnel && this.options.wytunnelRelease
+        ? await this.options.wytunnelRelease()
+        : undefined;
     for (const { route, nodeName, nodePublicIp, nodePublicHost } of rows) {
       const bridge = bridgesById.get(route.bridgeId);
       if (!bridge) continue;
@@ -620,6 +631,8 @@ export class PostgresBridgeRepository {
           transportPort: route.transportPort,
           transportConfig,
           bridgeFrpsEnabled: bridge.frpsEnabled,
+          wytunnelRepo: wtRel?.repository,
+          wytunnelVersion: wtRel?.tag,
         }),
       });
       byBridge.set(route.bridgeId, list);
@@ -1101,6 +1114,11 @@ export class PostgresBridgeRepository {
       executor,
       rows.filter(({ route }) => route.state === "active").map(({ route }) => route.nodeId),
     );
+    const hasWytunnel = rows.some(({ route }) => route.transport === "wytunnel");
+    const wtRel =
+      hasWytunnel && this.options.wytunnelRelease
+        ? await this.options.wytunnelRelease()
+        : undefined;
     const now = new Date();
     return rows.map(({ route, bridge, nodePublicIp, nodePublicHost }) =>
       toNodeRoute(
@@ -1110,6 +1128,7 @@ export class PostgresBridgeRepository {
         this.options.observationStaleMs,
         awgPaths.get(route.nodeId) ?? UNKNOWN_AWG_PATH,
         nodePublicIp ?? nodePublicHost,
+        wtRel,
       ),
     );
   };
@@ -1135,6 +1154,10 @@ export class PostgresBridgeRepository {
       executor,
       row.route.state === "active" ? [row.route.nodeId] : [],
     );
+    const wtRel =
+      row.route.transport === "wytunnel" && this.options.wytunnelRelease
+        ? await this.options.wytunnelRelease()
+        : undefined;
     return toNodeRoute(
       row.route,
       row.bridge,
@@ -1142,6 +1165,7 @@ export class PostgresBridgeRepository {
       this.options.observationStaleMs,
       awgPaths.get(row.route.nodeId) ?? UNKNOWN_AWG_PATH,
       row.nodePublicIp ?? row.nodePublicHost,
+      wtRel,
     );
   };
 

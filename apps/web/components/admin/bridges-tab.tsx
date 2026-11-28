@@ -2,7 +2,7 @@
 
 import * as React from "react";
 import Link from "next/link";
-import { ArrowDownUp, Cable, Cpu, Gauge, Pencil, Plus, SlidersHorizontal, Trash2 } from "lucide-react";
+import { ArrowDownUp, Cable, Cpu, Gauge, Pencil, Plus, RefreshCw, SlidersHorizontal, Trash2 } from "lucide-react";
 import { toast } from "sonner";
 import {
   BRIDGE_DEFAULT_CONTROL_TCP_PORT,
@@ -113,6 +113,7 @@ export function BridgeCardView({
   reachabilityBusy,
   onOpenNode,
   onEditRouteTransport,
+  latestWytunnelVersion,
   embedded,
 }: {
   bridge: Bridge;
@@ -125,6 +126,7 @@ export function BridgeCardView({
   reachabilityBusy?: boolean;
   onOpenNode?: (nodeId: string) => void;
   onEditRouteTransport?: (target: EditableRouteTransportTarget) => void;
+  latestWytunnelVersion?: string | null;
   /** Render card body directly without outer Card wrapper (for dialogs). */
   embedded?: boolean;
 }) {
@@ -266,6 +268,7 @@ export function BridgeCardView({
                     transportPort={route.transportPort}
                     transportConfig={route.transportConfig}
                     telemetry={route.telemetry}
+                    latestWytunnelVersion={latestWytunnelVersion}
                     t={t}
                   />
                   {/* Registration (frps or wytunnel) and the end-to-end AWG path are
@@ -560,11 +563,46 @@ export function BridgesSection({ infra, reachabilityBusy, onSetReachability }: {
   const [updating, setUpdating] = React.useState<Bridge | null>(null);
   const [editingRouteTransport, setEditingRouteTransport] =
     React.useState<EditableRouteTransportTarget | null>(null);
+  const [refreshingWt, setRefreshingWt] = React.useState(false);
+
+  const handleRefreshWytunnel = async () => {
+    setRefreshingWt(true);
+    try {
+      const rel = await infra.refreshWytunnelRelease?.();
+      if (rel) {
+        toast.success(t("bridge.wytunnel.releaseRefreshed", { tag: rel.tag }));
+      }
+    } finally {
+      setRefreshingWt(false);
+    }
+  };
 
   return (
     <section id={BRIDGES_ANCHOR} aria-labelledby="bridges-title" tabIndex={-1} className="min-w-0 scroll-mt-4 space-y-3">
       <div className="flex flex-wrap items-center gap-2">
         <h3 id="bridges-title" className="mr-auto text-base font-semibold">{t("bridge.title")}</h3>
+        {infra.wytunnelRelease ? (
+          <div className="inline-flex items-center gap-1 rounded-md border border-border/70 bg-well px-2 py-0.5 text-xs">
+            <a
+              href={infra.wytunnelRelease.htmlUrl}
+              target="_blank"
+              rel="noreferrer noopener"
+              className="font-mono text-foreground underline-offset-2 hover:underline"
+            >
+              {t("bridge.wytunnel.releaseLabel", { tag: infra.wytunnelRelease.tag })}
+            </a>
+            <button
+              type="button"
+              disabled={refreshingWt}
+              aria-label={t("bridge.wytunnel.releaseRefreshAria")}
+              title={t("bridge.wytunnel.releaseRefreshAria")}
+              onClick={() => void handleRefreshWytunnel()}
+              className="rounded p-0.5 text-muted-foreground hover:text-foreground disabled:opacity-50"
+            >
+              <RefreshCw className={cn("size-3", refreshingWt && "animate-spin")} />
+            </button>
+          </div>
+        ) : null}
         <Button size="sm" onClick={() => setShowAdd(true)}>
           <Plus /> {t("bridge.add")}
         </Button>
@@ -591,6 +629,7 @@ export function BridgesSection({ infra, reachabilityBusy, onSetReachability }: {
               bridge={bridge}
               t={t}
               lang={lang}
+              latestWytunnelVersion={infra.wytunnelRelease?.version}
               onRename={() => setRenaming(bridge)}
               onDelete={() => setDeleting(bridge)}
               onUpdateAgent={() => setUpdating(bridge)}

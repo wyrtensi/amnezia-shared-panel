@@ -88,6 +88,81 @@ export const BRIDGE_WYTUNNEL_DEFAULT_ROTATE_DRAIN_SEC = 5;
 export const BRIDGE_WYTUNNEL_DEFAULT_KEEPALIVE_SEC = 25;
 export const WYTUNNEL_HANDSHAKE_MAX_BYTES = 600;
 export const WYTUNNEL_HANDSHAKE_DEFAULT_WS_PATH = "/ws";
+export const WYTUNNEL_DEFAULT_REPO = "wyrtensi/wytunnel";
+export const WYTUNNEL_FALLBACK_TAG = "v0.1.0";
+
+const WYTUNNEL_RELEASE_REPO_RE = /^[A-Za-z0-9._-]+\/[A-Za-z0-9._-]+$/;
+const WYTUNNEL_RELEASE_VERSION_RE = /^v?(\d+\.\d+\.\d+(?:-[A-Za-z0-9.]+)?)$/;
+
+export const wytunnelReleaseAssetSchema = z.object({
+  name: z.string().min(1).max(200),
+  url: z.url(),
+  size: z.int().nonnegative(),
+  sha256: z
+    .string()
+    .regex(/^[0-9a-f]{64}$/)
+    .nullable(),
+});
+export type WytunnelReleaseAsset = z.infer<typeof wytunnelReleaseAssetSchema>;
+
+export const wytunnelReleaseSchema = z.object({
+  repository: z.string().min(1).max(200),
+  tag: z.string().min(1).max(64),
+  version: z.string().min(1).max(64),
+  htmlUrl: z.url(),
+  publishedAt: z.string().nullable(),
+  source: z.enum(["github", "pinned_env", "fallback"]),
+  assets: z.object({
+    amd64: wytunnelReleaseAssetSchema.nullable(),
+    arm64: wytunnelReleaseAssetSchema.nullable(),
+  }),
+});
+export type WytunnelRelease = z.infer<typeof wytunnelReleaseSchema>;
+
+/** Parse `WYTUNNEL_RELEASE_REPO` (`<owner>/<repo>`); defaults to `wyrtensi/wytunnel`. */
+export const parseWytunnelReleaseRepo = (raw: string | undefined): string => {
+  const trimmed = raw?.trim() ?? "";
+  return WYTUNNEL_RELEASE_REPO_RE.test(trimmed) ? trimmed : WYTUNNEL_DEFAULT_REPO;
+};
+
+/** Parse `WYTUNNEL_RELEASE_VERSION` (normalizing a `v` prefix); undefined when unset/invalid. */
+export const parseWytunnelReleaseVersion = (raw: string | undefined): string | undefined => {
+  const trimmed = raw?.trim() ?? "";
+  if (!trimmed) return undefined;
+  const match = WYTUNNEL_RELEASE_VERSION_RE.exec(trimmed);
+  return match ? `v${match[1]}` : undefined;
+};
+
+type ParsedSemver = { major: number; minor: number; patch: number; pre: string | null };
+
+const parseSemver = (raw: string | null | undefined): ParsedSemver | null => {
+  const trimmed = raw?.trim().replace(/^v/i, "") ?? "";
+  const match = /^(\d+)\.(\d+)\.(\d+)(?:-([A-Za-z0-9.]+))?$/.exec(trimmed);
+  if (!match) return null;
+  return {
+    major: Number(match[1]),
+    minor: Number(match[2]),
+    patch: Number(match[3]),
+    pre: match[4] ?? null,
+  };
+};
+
+/** Strictly true when `installedVersion` is older than `targetVersion`. */
+export const isWytunnelVersionOutdated = (
+  installedVersion: string | null | undefined,
+  targetVersion: string | null | undefined,
+): boolean => {
+  const cur = parseSemver(installedVersion);
+  const tgt = parseSemver(targetVersion);
+  if (!cur || !tgt) return false;
+  if (cur.major !== tgt.major) return cur.major < tgt.major;
+  if (cur.minor !== tgt.minor) return cur.minor < tgt.minor;
+  if (cur.patch !== tgt.patch) return cur.patch < tgt.patch;
+  if (cur.pre !== null && tgt.pre === null) return true;
+  if (cur.pre === null && tgt.pre !== null) return false;
+  if (cur.pre !== null && tgt.pre !== null) return cur.pre < tgt.pre;
+  return false;
+};
 
 const WYTUNNEL_HANDSHAKE_SNI_RE =
   /^[A-Za-z0-9](?:[A-Za-z0-9-]{0,61}[A-Za-z0-9])?(?:\.[A-Za-z0-9](?:[A-Za-z0-9-]{0,61}[A-Za-z0-9])?)*$/;

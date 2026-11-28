@@ -237,4 +237,35 @@ describe("bridge setup commands", () => {
     );
     expect(customBridgeOut).toContain("--handshake-mode custom --handshake-packet-data FgMBAAUAAAAAAQ== --filter-handshake");
   });
+
+  it("propagates custom WyTunnel release repo and version tag cleanly through installers", () => {
+    const cmd = routeSetupCommands({
+      id: ROUTE_ID,
+      bridgeId: BRIDGE_ID,
+      publicUdpPort: 41007,
+      udpPortStart: 41000,
+      bridgePublicIpv4: "198.51.100.7",
+      bridgeControlTcpPort: 7000,
+      nodePublicIp: "203.0.113.12",
+      transport: "wytunnel",
+      transportPort: 14107,
+      wytunnelRepo: "custom/wytunnel",
+      wytunnelVersion: "v0.2.1",
+    });
+    expect(cmd.install).toContain("--repo custom/wytunnel");
+    expect(cmd.install).toContain("--version v0.2.1");
+    expect(cmd.bridgeInstall).toContain("--repo custom/wytunnel");
+    expect(cmd.bridgeInstall).toContain("--version v0.2.1");
+
+    const bridgeArgs = splitArgsFromCommand(
+      cmd.bridgeDryRun ?? "",
+      "/opt/amnezia-bridge/scripts/install-wytunnel-bridge.sh",
+    );
+    const bridgeOut = execFileSync(
+      "bash",
+      [BRIDGE_WYTUNNEL_SCRIPT, ...bridgeArgs, "--wan-if", "eth0"],
+      { encoding: "utf8" },
+    );
+    expect(bridgeOut).toContain("version         = v0.2.1");
+  });
 });
