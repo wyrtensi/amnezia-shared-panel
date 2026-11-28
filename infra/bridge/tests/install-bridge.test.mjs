@@ -475,7 +475,7 @@ withHost("the agent gets exactly one read-write mount (the request spool) and no
     ["- ${BRIDGE_UPDATE_SPOOL:-/var/lib/amnezia-bridge/update}/requests:/var/lib/amnezia-bridge/update/requests"],
   );
   assert.match(compose, /\/results:\/var\/lib\/amnezia-bridge\/update\/results:ro$/m);
-  assert.match(compose, /\/wytunnel:\/etc\/amnezia-bridge\/wytunnel:ro$/m);
+  assert.match(compose, /amnezia-wytunnel:\/run\/amnezia-wytunnel:ro$/m);
   assert.doesNotMatch(compose, /docker\.sock/);
   assert.match(compose, /BRIDGE_AGENT_IMAGE_REPOSITORY: \$\{BRIDGE_AGENT_IMAGE_REPOSITORY:-\}/);
   assert.match(compose, /BRIDGE_UPDATE_SPOOL_DIR: \/var\/lib\/amnezia-bridge\/update$/m);
