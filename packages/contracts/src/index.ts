@@ -448,6 +448,8 @@ export function selectDefaultNodeEndpoint<T extends { id: string; ordinal: numbe
     })[0];
 }
 
+export const egressAutoRotatePoolIdsSchema = z.array(z.uuid()).max(32);
+
 export const nodePublicEndpointMutationSchema = z.discriminatedUnion("action", [
   z.object({
     action: z.literal("add"),
@@ -456,6 +458,8 @@ export const nodePublicEndpointMutationSchema = z.discriminatedUnion("action", [
     entryName: nodeEndpointNameSchema.optional(),
     customName: nodeEndpointNameSchema.nullish(),
     egressIpId: z.uuid().nullish(),
+    egressAutoRotateEnabled: z.boolean().optional(),
+    egressAutoRotatePoolIds: egressAutoRotatePoolIdsSchema.optional(),
     enabledProtocols: protocolListSchema.min(1).nullish(),
   }).strict(),
   z.object({
@@ -466,6 +470,8 @@ export const nodePublicEndpointMutationSchema = z.discriminatedUnion("action", [
     customName: nodeEndpointNameSchema.nullish(),
     renameEntryGroup: z.boolean().optional(),
     egressIpId: z.uuid().nullish(),
+    egressAutoRotateEnabled: z.boolean().optional(),
+    egressAutoRotatePoolIds: egressAutoRotatePoolIdsSchema.optional(),
     enabled: z.boolean().optional(),
     enabledProtocols: protocolListSchema.min(1).nullish(),
     reachabilityEnabled: z.boolean().optional(),
@@ -480,6 +486,8 @@ export const nodePublicEndpointMutationSchema = z.discriminatedUnion("action", [
       fields.entryName !== undefined ||
       fields.customName !== undefined ||
       fields.egressIpId !== undefined ||
+      fields.egressAutoRotateEnabled !== undefined ||
+      fields.egressAutoRotatePoolIds !== undefined ||
       fields.enabled !== undefined ||
       fields.enabledProtocols !== undefined ||
       fields.reachabilityEnabled !== undefined ||
@@ -488,7 +496,7 @@ export const nodePublicEndpointMutationSchema = z.discriminatedUnion("action", [
       fields.awgMtu !== undefined ||
       fields.awgDeviceRules !== undefined,
     {
-      message: "An endpoint name, exit assignment, availability, protocols, reachability, or bridge setting is required",
+      message: "An endpoint name, exit assignment, auto-rotation, availability, protocols, reachability, or bridge setting is required",
     },
   ),
   z.object({
@@ -2506,6 +2514,9 @@ export const adminNodeEndpointSchema = userNodeEndpointSchema.extend({
   variantOrdinal: z.int().positive().optional(),
   egressIpId: z.uuid().nullable().optional(),
   effectiveEgressIp: z.string().nullable().optional(),
+  egressAutoRotateEnabled: z.boolean().optional(),
+  egressAutoRotatePoolIds: egressAutoRotatePoolIdsSchema.optional(),
+  egressAutoRotatedAt: z.iso.datetime().nullable().optional(),
   enabledProtocols: protocolListSchema.nullable().optional(),
   onlinePeerCount: z.int().nonnegative().optional(),
   onlineByProtocol: z.record(z.string(), z.int().nonnegative()).optional(),
@@ -2543,6 +2554,9 @@ export const nodePublicEndpointMutationResultSchema = z.object({
     reachabilityEnabled: true,
   }).extend({
     bridgeMode: endpointBridgeModeSchema,
+    egressAutoRotateEnabled: z.boolean().optional(),
+    egressAutoRotatePoolIds: egressAutoRotatePoolIdsSchema.optional(),
+    egressAutoRotatedAt: z.iso.datetime().nullable().optional(),
     enabledProtocols: protocolListSchema.nullable().optional(),
     awgGenerator: awgGeneratorSettingsSchema.nullish(),
     awgMtu: awgClientMtuSchema.nullish(),

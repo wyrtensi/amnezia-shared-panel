@@ -145,6 +145,8 @@ export type EntryGraphNode = {
   probeEgressMatch: boolean | null;
   effectiveEgressIp: string | null;
   egressIpId: string | null;
+  egressAutoRotateEnabled?: boolean;
+  egressAutoRotatePoolCount?: number;
   onlinePeerCount: number;
   onlineByProtocol?: Record<string, number>;
   activeKeyCount?: number;
@@ -845,6 +847,8 @@ export function buildFleetTopologyGraph({
           probeEgressMatch: ep.probeEgressMatch ?? null,
           effectiveEgressIp: ep.effectiveEgressIp ?? null,
           egressIpId: ep.egressIpId ?? null,
+          egressAutoRotateEnabled: Boolean(ep.egressAutoRotateEnabled),
+          egressAutoRotatePoolCount: (ep.egressAutoRotatePoolIds ?? []).length,
           onlinePeerCount: ep.onlinePeerCount ?? 0,
           onlineByProtocol: ep.onlineByProtocol,
           activeKeyCount: ep.activeKeyCount,
@@ -1908,8 +1912,11 @@ function describeSelectedItem(
       typeof item.activeKeyCount === "number"
         ? t("ov.map.activeKeysCount", { count: item.activeKeyCount })
         : "";
+    const autoRotatePart = item.egressAutoRotateEnabled
+      ? ` · ${t("egress.autoRotateBadge", { count: item.egressAutoRotatePoolCount ?? 0 })}`
+      : "";
     return {
-      summary: `${item.nodeName} · ${item.name} (${item.publicAddress}${exitPart}) · ${onlineText}${keysPart} · ${probePart}${noticePart}`,
+      summary: `${item.nodeName} · ${item.name} (${item.publicAddress}${exitPart}) · ${onlineText}${keysPart} · ${probePart}${autoRotatePart}${noticePart}`,
       href: `${NODES_PATH}#${nodeCardAnchor(item.nodeId)}`,
       linkLabel: t("ov.map.openNode"),
     };

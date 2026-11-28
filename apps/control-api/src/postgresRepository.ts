@@ -1577,6 +1577,9 @@ export class PostgresControlRepository implements ControlRepository {
         variantOrdinal: endpoint.variantOrdinal,
         egressIpId: endpoint.egressIpId,
         effectiveEgressIp,
+        egressAutoRotateEnabled: endpoint.egressAutoRotateEnabled,
+        egressAutoRotatePoolIds: endpoint.egressAutoRotatePoolIds ?? [],
+        egressAutoRotatedAt: endpoint.egressAutoRotatedAt?.toISOString() ?? null,
         probeObservedEgressIp: endpoint.probeObservedEgressIp,
         probeEgressMatch: endpoint.probeEgressMatch,
         publicAddress: endpoint.address,
@@ -2278,6 +2281,24 @@ export class PostgresControlRepository implements ControlRepository {
     }
   };
 
+  private validateEgressAutoRotatePool = async (
+    tx: DbTransaction,
+    nodeId: string,
+    poolIds: readonly string[],
+  ): Promise<string[]> => {
+    const deduped = [...new Set(poolIds)];
+    if (deduped.length === 0) return [];
+    const existing = await tx
+      .select({ id: nodeEgressIps.id })
+      .from(nodeEgressIps)
+      .where(and(eq(nodeEgressIps.nodeId, nodeId), inArray(nodeEgressIps.id, deduped)));
+    const found = new Set(existing.map((item) => item.id));
+    if (found.size !== deduped.length) {
+      throw new ApiError(404, "Exit IP not found on node", "NODE_EGRESS_IP_NOT_FOUND");
+    }
+    return deduped;
+  };
+
   private changeNodePublicEndpoint = async (
     tx: DbTransaction,
     actor: Actor,
@@ -2350,6 +2371,18 @@ export class PostgresControlRepository implements ControlRepository {
       }).from(nodeVpnEndpoints).where(eq(nodeVpnEndpoints.nodeId, nodeId))
         .orderBy(desc(nodeVpnEndpoints.ordinal));
       const targetEgressId = request.egressIpId ?? null;
+      const autoRotatePoolIds =
+        request.egressAutoRotatePoolIds !== undefined
+          ? await this.validateEgressAutoRotatePool(tx, nodeId, request.egressAutoRotatePoolIds)
+          : [];
+      const autoRotateEnabled = request.egressAutoRotateEnabled ?? false;
+      if (autoRotateEnabled && autoRotatePoolIds.length === 0) {
+        throw new ApiError(
+          400,
+          "Select at least one Exit IP for the auto-rotation pool",
+          "VALIDATION_ERROR",
+        );
+      }
       if (existing.some((endpoint) => endpoint.address === request.address && (endpoint.egressIpId ?? null) === targetEgressId)) {
         throw new ApiError(409, "This Entry and Exit IP combination already exists on this node", "NODE_ENDPOINT_EXISTS");
       }
@@ -2382,6 +2415,8 @@ export class PostgresControlRepository implements ControlRepository {
         customName,
         variantOrdinal,
         egressIpId: targetEgressId,
+        egressAutoRotateEnabled: autoRotateEnabled,
+        egressAutoRotatePoolIds: autoRotatePoolIds,
         enabledProtocols: request.enabledProtocols ?? null,
         name: provisionalName,
       }).returning();
@@ -2542,6 +2577,19 @@ export class PostgresControlRepository implements ControlRepository {
           .set({ entryName: nextEntryName })
           .where(and(eq(nodeVpnEndpoints.nodeId, nodeId), eq(nodeVpnEndpoints.address, current.address)));
       }
+      const nextAutoRotatePoolIds =
+        request.egressAutoRotatePoolIds !== undefined
+          ? await this.validateEgressAutoRotatePool(tx, nodeId, request.egressAutoRotatePoolIds)
+          : (current.egressAutoRotatePoolIds ?? []);
+      const nextAutoRotateEnabled =
+        request.egressAutoRotateEnabled ?? current.egressAutoRotateEnabled;
+      if (nextAutoRotateEnabled && nextAutoRotatePoolIds.length === 0) {
+        throw new ApiError(
+          400,
+          "Select at least one Exit IP for the auto-rotation pool",
+          "VALIDATION_ERROR",
+        );
+      }
       const changeEnabled = request.enabled !== undefined && current.enabled !== request.enabled;
       const changeBridgeMode = request.bridgeMode !== undefined && current.bridgeMode !== request.bridgeMode;
       const changeReachability =
@@ -2567,6 +2615,12 @@ export class PostgresControlRepository implements ControlRepository {
         entryName: nextEntryName,
         customName: nextCustomName,
         ...(changeEgressIp ? { egressIpId: nextEgressIpId } : {}),
+        ...(request.egressAutoRotateEnabled !== undefined
+          ? { egressAutoRotateEnabled: request.egressAutoRotateEnabled }
+          : {}),
+        ...(request.egressAutoRotatePoolIds !== undefined
+          ? { egressAutoRotatePoolIds: nextAutoRotatePoolIds }
+          : {}),
         bridgeMode: request.bridgeMode ?? current.bridgeMode,
         ...(request.enabledProtocols !== undefined
           ? { enabledProtocols: request.enabledProtocols ?? null }
@@ -2641,6 +2695,8 @@ export class PostgresControlRepository implements ControlRepository {
         generatorChanged: request.action === "update" && request.awgGenerator !== undefined,
         awgMtu: row.awgMtu,
         enabledProtocols: row.enabledProtocols ?? null,
+        egressAutoRotateEnabled: row.egressAutoRotateEnabled,
+        egressAutoRotatePoolCount: (row.egressAutoRotatePoolIds ?? []).length,
         ...(request.action === "update" && request.awgDeviceRules !== undefined
           ? { deviceRules: Object.keys(row.awgDeviceRules ?? {}) }
           : {}),
@@ -2655,6 +2711,9 @@ export class PostgresControlRepository implements ControlRepository {
         enabled: row.enabled,
         reachabilityEnabled: row.reachabilityEnabled,
         bridgeMode: row.bridgeMode,
+        egressAutoRotateEnabled: row.egressAutoRotateEnabled,
+        egressAutoRotatePoolIds: row.egressAutoRotatePoolIds ?? [],
+        egressAutoRotatedAt: row.egressAutoRotatedAt?.toISOString() ?? null,
         enabledProtocols: row.enabledProtocols ?? null,
         awgGenerator: row.awgGenerator,
         awgMtu: row.awgMtu,
@@ -8422,6 +8481,25 @@ export class PostgresControlRepository implements ControlRepository {
         .update(nodes)
         .set({ egressDefaultIpId: null, updatedAt: new Date() })
         .where(and(eq(nodes.id, nodeId), eq(nodes.egressDefaultIpId, ipId)));
+      const affectedEndpoints = await tx
+        .select({
+          id: nodeVpnEndpoints.id,
+          egressAutoRotatePoolIds: nodeVpnEndpoints.egressAutoRotatePoolIds,
+        })
+        .from(nodeVpnEndpoints)
+        .where(eq(nodeVpnEndpoints.nodeId, nodeId));
+      for (const ep of affectedEndpoints) {
+        const pool = ep.egressAutoRotatePoolIds ?? [];
+        if (!pool.includes(ipId)) continue;
+        const filtered = pool.filter((id) => id !== ipId);
+        await tx
+          .update(nodeVpnEndpoints)
+          .set({
+            egressAutoRotatePoolIds: filtered,
+            ...(filtered.length === 0 ? { egressAutoRotateEnabled: false } : {}),
+          })
+          .where(eq(nodeVpnEndpoints.id, ep.id));
+      }
       await tx
         .delete(nodeEgressIps)
         .where(and(eq(nodeEgressIps.nodeId, nodeId), eq(nodeEgressIps.id, ipId)));

@@ -2190,6 +2190,19 @@ async function cmdNodeEgress(args: string[]): Promise<void> {
       egressDefaultIpId: node.egressDefaultIpId ?? null,
       hostNetworkReport: node.hostNetworkReport ?? null,
       egressIps: ips,
+      ...(node.publicEndpoints
+        ? {
+            publicEndpoints: node.publicEndpoints.map((ep) => ({
+              id: ep.id,
+              name: ep.name,
+              publicAddress: ep.publicAddress,
+              egressIpId: ep.egressIpId ?? null,
+              egressAutoRotateEnabled: ep.egressAutoRotateEnabled ?? false,
+              egressAutoRotatePoolIds: ep.egressAutoRotatePoolIds ?? [],
+              egressAutoRotatedAt: ep.egressAutoRotatedAt ?? null,
+            })),
+          }
+        : {}),
     });
   }
   console.log(`node ${node.name} (${node.id})`);
@@ -2235,6 +2248,17 @@ async function cmdNodeEgress(args: string[]): Promise<void> {
       ["id", "ipv4", "label", "iface", "gw", "table", "dns", "dnat", "state", "eps", "warn"],
     ),
   );
+  const autoRotateEps = (node.publicEndpoints ?? []).filter((ep) => ep.egressAutoRotateEnabled);
+  if (autoRotateEps.length > 0) {
+    const exitIpById = new Map(ips.map((ip) => [ip.id, ip.ipv4]));
+    console.log("");
+    for (const ep of autoRotateEps) {
+      const poolIps = (ep.egressAutoRotatePoolIds ?? []).map((eid) => exitIpById.get(eid) ?? eid);
+      console.log(
+        `  auto-rotate: ${ep.name} (${ep.publicAddress}) -> [${poolIps.join(", ")}]${ep.egressAutoRotatedAt ? ` (last: ${ep.egressAutoRotatedAt})` : ""}`,
+      );
+    }
+  }
 }
 
 async function cmdNodeEgressMode(args: string[]): Promise<void> {
@@ -2812,7 +2836,24 @@ async function cmdNodeUpdate(args: string[]): Promise<void> {
   const endpointEntryName = flagOf(args, "endpoint-entry-name");
   const endpointCustomName = flagOf(args, "endpoint-custom-name");
   const endpointEgressId = flagOf(args, "endpoint-egress-id");
+  const endpointAutoRotate = flagOf(args, "endpoint-auto-rotate");
+  const endpointAutoRotatePool = flagOf(args, "endpoint-auto-rotate-pool");
   const endpointProtocols = flagOf(args, "endpoint-protocols");
+  const parseAutoRotatePool = (raw: string): string[] => {
+    const norm = raw.trim().toLowerCase();
+    if (norm === "clear" || norm === "none" || norm === "empty" || norm === "") return [];
+    const list = raw
+      .split(",")
+      .map((s) => s.trim())
+      .filter(Boolean);
+    const uuidRe = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
+    for (const item of list) {
+      if (!uuidRe.test(item)) {
+        throw new Error(`Invalid Exit IP UUID "${item}" in --endpoint-auto-rotate-pool`);
+      }
+    }
+    return [...new Set(list)];
+  };
   const endpointEnabled = flagOf(args, "endpoint-enabled");
   const endpointReachability = flagOf(args, "endpoint-reachability");
   const endpointBridgeMode = flagOf(args, "endpoint-bridge-mode");
@@ -2864,6 +2905,12 @@ async function cmdNodeUpdate(args: string[]): Promise<void> {
       ...(endpointEgressId !== undefined
         ? { egressIpId: endpointEgressId === "null" ? null : endpointEgressId }
         : {}),
+      ...(endpointAutoRotate !== undefined
+        ? { egressAutoRotateEnabled: parseBoolFlag("endpoint-auto-rotate", endpointAutoRotate) }
+        : {}),
+      ...(endpointAutoRotatePool !== undefined
+        ? { egressAutoRotatePoolIds: parseAutoRotatePool(endpointAutoRotatePool) }
+        : {}),
       ...(endpointProtocols !== undefined
         ? { enabledProtocols: parseEndpointProtocols(endpointProtocols) }
         : {}),
@@ -2879,6 +2926,12 @@ async function cmdNodeUpdate(args: string[]): Promise<void> {
         : {}),
       ...(endpointEgressId !== undefined
         ? { egressIpId: endpointEgressId === "null" ? null : endpointEgressId }
+        : {}),
+      ...(endpointAutoRotate !== undefined
+        ? { egressAutoRotateEnabled: parseBoolFlag("endpoint-auto-rotate", endpointAutoRotate) }
+        : {}),
+      ...(endpointAutoRotatePool !== undefined
+        ? { egressAutoRotatePoolIds: parseAutoRotatePool(endpointAutoRotatePool) }
         : {}),
       ...(endpointProtocols !== undefined
         ? { enabledProtocols: parseEndpointProtocols(endpointProtocols) }
@@ -2897,6 +2950,8 @@ async function cmdNodeUpdate(args: string[]): Promise<void> {
     endpointEntryName !== undefined ||
     endpointCustomName !== undefined ||
     endpointEgressId !== undefined ||
+    endpointAutoRotate !== undefined ||
+    endpointAutoRotatePool !== undefined ||
     endpointProtocols !== undefined ||
     endpointEnabled !== undefined ||
     endpointReachability !== undefined ||
@@ -4188,6 +4243,7 @@ Nodes:
   node-update <id> --endpoint-id=<uuid> [--endpoint-name=<name>] [--endpoint-enabled=true|false]
             [--endpoint-reachability=true|false] [--endpoint-bridge-mode=inherit|direct|bridge]
             [--endpoint-protocols=awg3,awg2|inherit]
+            [--endpoint-auto-rotate=true|false] [--endpoint-auto-rotate-pool=<uuid,uuid|clear>]
   node-notify-key-update <node> [--exit=<id|ipv4>] [--endpoint=<id>] [--note=<text>] [--clear] [--json]
                                           Trigger or clear a manual "update your key" notice
   node-remove <id>                        Delete a node (refused while it has keys)

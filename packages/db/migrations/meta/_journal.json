@@ -519,6 +519,13 @@
       "when": 1795400000012,
       "tag": "0073_bridge_wytunnel_and_key_notices",
       "breakpoints": true
+    },
+    {
+      "idx": 74,
+      "version": "7",
+      "when": 1795400000013,
+      "tag": "0074_endpoint_egress_auto_rotate",
+      "breakpoints": true
     }
   ]
 }

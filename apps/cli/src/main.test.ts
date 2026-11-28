@@ -1502,6 +1502,42 @@ describe("reachability probe commands", () => {
     });
   });
 
+  it("patches per-endpoint Exit IP auto-rotation toggle and pool", async () => {
+    const exitA = "aaaa1111-1111-4111-8111-111111111111";
+    const exitB = "bbbb2222-2222-4222-8222-222222222222";
+    const calls = stubFetch([{ body: {} }, { body: {} }]);
+    await run([
+      "node-update",
+      "11111111-1111-4111-8111-111111111111",
+      "--endpoint-id=44444444-4444-4444-8444-444444444444",
+      "--endpoint-auto-rotate=true",
+      `--endpoint-auto-rotate-pool=${exitA},${exitB}`,
+    ]);
+    expect(JSON.parse(calls[0]?.init?.body as string)).toEqual({
+      publicEndpoint: {
+        action: "update",
+        id: "44444444-4444-4444-8444-444444444444",
+        egressAutoRotateEnabled: true,
+        egressAutoRotatePoolIds: [exitA, exitB],
+      },
+    });
+    await run([
+      "node-update",
+      "11111111-1111-4111-8111-111111111111",
+      "--endpoint-id=44444444-4444-4444-8444-444444444444",
+      "--endpoint-auto-rotate=false",
+      "--endpoint-auto-rotate-pool=clear",
+    ]);
+    expect(JSON.parse(calls[1]?.init?.body as string)).toEqual({
+      publicEndpoint: {
+        action: "update",
+        id: "44444444-4444-4444-8444-444444444444",
+        egressAutoRotateEnabled: false,
+        egressAutoRotatePoolIds: [],
+      },
+    });
+  });
+
   it("node-probe --off patches the node", async () => {
     const calls = stubFetch([
       { body: [{ id: "11111111-1111-4111-8111-111111111111", name: "node-a" }] },

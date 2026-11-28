@@ -735,6 +735,12 @@ export const nodeVpnEndpoints = pgTable(
     egressIpId: uuid("egress_ip_id").references(() => nodeEgressIps.id, {
       onDelete: "set null",
     }),
+    egressAutoRotateEnabled: boolean("egress_auto_rotate_enabled").default(false).notNull(),
+    egressAutoRotatePoolIds: jsonb("egress_auto_rotate_pool_ids")
+      .$type<string[]>()
+      .default(sql`'[]'::jsonb`)
+      .notNull(),
+    egressAutoRotatedAt: timestamp("egress_auto_rotated_at", { withTimezone: true }),
     enabled: boolean("enabled").default(true).notNull(),
     enabledProtocols: jsonb("enabled_protocols").$type<ProtocolKind[]>(),
     reachabilityEnabled: boolean("reachability_enabled").default(true).notNull(),
@@ -776,6 +782,10 @@ export const nodeVpnEndpoints = pgTable(
     check(
       "node_vpn_endpoints_enabled_protocols_valid",
       sql`${table.enabledProtocols} is null or (jsonb_typeof(${table.enabledProtocols}) = 'array' and jsonb_array_length(${table.enabledProtocols}) > 0)`,
+    ),
+    check(
+      "node_vpn_endpoints_egress_auto_rotate_pool_valid",
+      sql`jsonb_typeof(${table.egressAutoRotatePoolIds}) = 'array'`,
     ),
   ],
 );

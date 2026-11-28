@@ -2474,9 +2474,17 @@ const ru = {
   "notifyKeyUpdate.sentToast": "Уведомление отправлено ({count} активных ключей)",
   "notifyKeyUpdate.clearedToast": "Уведомление сброшено",
 
-  // Per-variant protocols
+  // Per-variant protocols & Exit IP auto-rotation
   "egress.variantProtocols": "Протоколы варианта",
   "egress.variantProtocolsInherit": "Наследовать от ноды",
+  "egress.autoRotateLabel": "Авторотация Exit IP при недоступности",
+  "egress.autoRotateHint":
+    "Если этот вход перестаёт отвечать и срабатывает алерт, панель автоматически переключит его на другой активный Exit IP из выбранного пула. Ключи пользователей менять не нужно (требуется режим Routed).",
+  "egress.autoRotatePoolLabel": "Пул Exit IP для авторотации",
+  "egress.autoRotatePoolEmpty": "Выберите хотя бы один Exit IP в пуле.",
+  "egress.autoRotateRoutedWarning": "Авторотация срабатывает только в режиме Routed.",
+  "egress.autoRotateBadge": "Авторотация ({count})",
+  "egress.autoRotateLastAt": "Последняя авторотация: {time}",
 
   // Audit WyTunnel & key-update events
   "audit.exact.vpn_bridge.transport_updated": "Обновлены настройки транспорта моста",
@@ -2487,6 +2495,7 @@ const ru = {
   "audit.exact.node.egress_key_update_notice_cleared": "Сброшено уведомление обновить ключ (Exit IP)",
   "audit.exact.node.endpoint_key_update_notified": "Отправлено уведомление обновить ключ (вариант)",
   "audit.exact.node.endpoint_key_update_notice_cleared": "Сброшено уведомление обновить ключ (вариант)",
+  "audit.exact.node.endpoint_egress_auto_rotated": "Авторотация Exit IP варианта при недоступности",
 } as const;
 
 const en = {
@@ -4886,9 +4895,17 @@ const en = {
   "notifyKeyUpdate.sentToast": "Notice sent ({count} active keys)",
   "notifyKeyUpdate.clearedToast": "Notice cleared",
 
-  // Per-variant protocols
+  // Per-variant protocols & Exit IP auto-rotation
   "egress.variantProtocols": "Variant protocols",
   "egress.variantProtocolsInherit": "Inherit from node",
+  "egress.autoRotateLabel": "Auto-rotate Exit IP on outage",
+  "egress.autoRotateHint":
+    "When this entry triggers a reachability outage alert, the panel automatically switches it to another active Exit IP from the selected pool. User keys do not need to be re-imported (requires Routed mode).",
+  "egress.autoRotatePoolLabel": "Exit IP rotation pool",
+  "egress.autoRotatePoolEmpty": "Select at least one Exit IP for the pool.",
+  "egress.autoRotateRoutedWarning": "Auto-rotation only runs while the node is in Routed mode.",
+  "egress.autoRotateBadge": "Auto-rotate ({count})",
+  "egress.autoRotateLastAt": "Last auto-rotated: {time}",
 
   // Audit WyTunnel & key-update events
   "audit.exact.vpn_bridge.transport_updated": "Updated bridge transport settings",
@@ -4899,6 +4916,7 @@ const en = {
   "audit.exact.node.egress_key_update_notice_cleared": "Cleared key update notice (Exit IP)",
   "audit.exact.node.endpoint_key_update_notified": "Sent key update notice (variant)",
   "audit.exact.node.endpoint_key_update_notice_cleared": "Cleared key update notice (variant)",
+  "audit.exact.node.endpoint_egress_auto_rotated": "Auto-rotated variant Exit IP on outage",
 } satisfies Record<keyof typeof ru, string>;
 
 export const messages = { ru, en } as const;

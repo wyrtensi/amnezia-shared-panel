@@ -38,6 +38,39 @@ describe("node listener selection", () => {
     const publicEndpoint = { action: "add", address: "127.0.0.1" };
     expect(updateNodeRequestSchema.safeParse({ publicEndpoint }).success).toBe(false);
   });
+
+  it("accepts and validates exit auto-rotation fields on add and update", () => {
+    const exitA = "11111111-1111-4111-8111-111111111111";
+    const exitB = "22222222-2222-4222-8222-222222222222";
+    const addPayload = {
+      action: "add" as const,
+      address: "93.184.216.34",
+      egressIpId: exitA,
+      egressAutoRotateEnabled: true,
+      egressAutoRotatePoolIds: [exitA, exitB],
+    };
+    expect(updateNodeRequestSchema.parse({ publicEndpoint: addPayload })).toEqual({
+      publicEndpoint: addPayload,
+    });
+    const toggleOnly = {
+      action: "update" as const,
+      id: endpointId,
+      egressAutoRotateEnabled: false,
+      egressAutoRotatePoolIds: [],
+    };
+    expect(updateNodeRequestSchema.parse({ publicEndpoint: toggleOnly })).toEqual({
+      publicEndpoint: toggleOnly,
+    });
+    expect(
+      updateNodeRequestSchema.safeParse({
+        publicEndpoint: {
+          action: "update",
+          id: endpointId,
+          egressAutoRotatePoolIds: ["not-a-uuid"],
+        },
+      }).success,
+    ).toBe(false);
+  });
 });
 
 describe("nodeEndpointDefaultName", () => {

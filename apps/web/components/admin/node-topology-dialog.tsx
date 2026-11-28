@@ -10,6 +10,7 @@ import {
   GitBranch,
   Pencil,
   Plus,
+  RefreshCw,
   ShieldCheck,
   Trash2,
 } from "lucide-react";
@@ -346,6 +347,8 @@ export function NodeTopologyDialogBody({
   const [varCustomName, setVarCustomName] = React.useState("");
   const [varExitId, setVarExitId] = React.useState<string>(DEFAULT_EXIT_SENTINEL);
   const [varProtocols, setVarProtocols] = React.useState<ProtocolKind[] | null>(null);
+  const [varAutoRotate, setVarAutoRotate] = React.useState(false);
+  const [varAutoRotatePool, setVarAutoRotatePool] = React.useState<string[]>([]);
 
   const [editVarId, setEditVarId] = React.useState<string | null>(null);
   const [editVarEntryName, setEditVarEntryName] = React.useState("");
@@ -353,6 +356,8 @@ export function NodeTopologyDialogBody({
   const [editVarExitId, setEditVarExitId] = React.useState<string>(DEFAULT_EXIT_SENTINEL);
   const [editVarRenameGroup, setEditVarRenameGroup] = React.useState(false);
   const [editVarProtocols, setEditVarProtocols] = React.useState<ProtocolKind[] | null>(null);
+  const [editVarAutoRotate, setEditVarAutoRotate] = React.useState(false);
+  const [editVarAutoRotatePool, setEditVarAutoRotatePool] = React.useState<string[]>([]);
   const [internalNotifyTarget, setInternalNotifyTarget] =
     React.useState<NotifyKeyUpdateTarget | null>(null);
   const openNotify = onOpenNotify ?? setInternalNotifyTarget;
@@ -365,6 +370,8 @@ export function NodeTopologyDialogBody({
     setEditExit(null);
     setEditVarId(null);
     setEditVarProtocols(null);
+    setEditVarAutoRotate(false);
+    setEditVarAutoRotatePool([]);
     setNewExitIp("");
     setNewExitLabel("");
     setNewExitIface("");
@@ -380,6 +387,8 @@ export function NodeTopologyDialogBody({
     setVarCustomName("");
     setVarExitId(DEFAULT_EXIT_SENTINEL);
     setVarProtocols(null);
+    setVarAutoRotate(false);
+    setVarAutoRotatePool([]);
     setInternalNotifyTarget(null);
   }, [node.id]);
 
@@ -1533,6 +1542,24 @@ export function NodeTopologyDialogBody({
                             {ep.enabledProtocols.join(", ")}
                           </Badge>
                         ) : null}
+                        {ep.egressAutoRotateEnabled ? (
+                          <Badge
+                            variant="secondary"
+                            className="gap-1 text-[10px]"
+                            title={
+                              ep.egressAutoRotatedAt
+                                ? t("egress.autoRotateLastAt", {
+                                    time: new Date(ep.egressAutoRotatedAt).toLocaleString(lang),
+                                  })
+                                : undefined
+                            }
+                          >
+                            <RefreshCw className="size-3" />
+                            {t("egress.autoRotateBadge", {
+                              count: (ep.egressAutoRotatePoolIds ?? []).length,
+                            })}
+                          </Badge>
+                        ) : null}
                         {ep.keyUpdateNotifiedAt ? (
                           <Badge variant="warning">{t("notifyKeyUpdate.activeBadge")}</Badge>
                         ) : null}
@@ -1612,6 +1639,8 @@ export function NodeTopologyDialogBody({
                             setEditVarCustomName(ep.customName ?? "");
                             setEditVarExitId(ep.egressIpId ?? DEFAULT_EXIT_SENTINEL);
                             setEditVarProtocols(ep.enabledProtocols ?? null);
+                            setEditVarAutoRotate(Boolean(ep.egressAutoRotateEnabled));
+                            setEditVarAutoRotatePool(ep.egressAutoRotatePoolIds ?? []);
                             setEditVarRenameGroup(false);
                           }}
                         >
@@ -1654,6 +1683,8 @@ export function NodeTopologyDialogBody({
                                   ? null
                                   : editVarExitId,
                               enabledProtocols: editVarProtocols,
+                              egressAutoRotateEnabled: editVarAutoRotate,
+                              egressAutoRotatePoolIds: editVarAutoRotatePool,
                             });
                             setEditVarId(null);
                           });
@@ -1727,6 +1758,62 @@ export function NodeTopologyDialogBody({
                             })
                           ) : null}
                         </div>
+                        <div className="space-y-1.5 rounded border border-border/60 bg-card/60 p-2">
+                          <div className="flex flex-wrap items-center gap-2">
+                            <label className="flex items-center gap-1.5 font-medium">
+                              <Checkbox
+                                checked={editVarAutoRotate}
+                                onChange={(e) => {
+                                  const next = e.target.checked;
+                                  setEditVarAutoRotate(next);
+                                  if (next && editVarAutoRotatePool.length === 0) {
+                                    setEditVarAutoRotatePool(
+                                      exits.filter((x) => x.enabled).map((x) => x.id),
+                                    );
+                                  }
+                                }}
+                              />
+                              <span>{t("egress.autoRotateLabel")}</span>
+                            </label>
+                            <Hint>{t("egress.autoRotateHint")}</Hint>
+                          </div>
+                          {editVarAutoRotate ? (
+                            <div className="space-y-1 pl-5">
+                              {node.egressMode !== "routed" ? (
+                                <p className="text-[11px] text-warning">
+                                  {t("egress.autoRotateRoutedWarning")}
+                                </p>
+                              ) : null}
+                              <p className="text-[11px] text-muted-foreground">
+                                {t("egress.autoRotatePoolLabel")}:
+                              </p>
+                              <div className="flex flex-wrap gap-x-3 gap-y-1">
+                                {exits.map((exit) => (
+                                  <label key={exit.id} className="flex items-center gap-1.5">
+                                    <Checkbox
+                                      checked={editVarAutoRotatePool.includes(exit.id)}
+                                      onChange={(e) => {
+                                        setEditVarAutoRotatePool((prev) =>
+                                          e.target.checked
+                                            ? [...new Set([...prev, exit.id])]
+                                            : prev.filter((id) => id !== exit.id),
+                                        );
+                                      }}
+                                    />
+                                    <span className="font-mono">
+                                      {exit.label ? `${exit.label} (${exit.ipv4})` : exit.ipv4}
+                                    </span>
+                                  </label>
+                                ))}
+                              </div>
+                              {editVarAutoRotatePool.length === 0 ? (
+                                <p className="text-[11px] text-destructive">
+                                  {t("egress.autoRotatePoolEmpty")}
+                                </p>
+                              ) : null}
+                            </div>
+                          ) : null}
+                        </div>
                         <div className="flex flex-wrap items-center justify-between gap-2">
                           <label className="flex items-center gap-2">
                             <Checkbox
@@ -1744,7 +1831,14 @@ export function NodeTopologyDialogBody({
                             >
                               {t("common.cancel")}
                             </Button>
-                            <Button type="submit" size="sm" disabled={busy !== null}>
+                            <Button
+                              type="submit"
+                              size="sm"
+                              disabled={
+                                busy !== null ||
+                                (editVarAutoRotate && editVarAutoRotatePool.length === 0)
+                              }
+                            >
                               {t("common.save")}
                             </Button>
                           </div>
@@ -1768,9 +1862,17 @@ export function NodeTopologyDialogBody({
                     customName: varCustomName.trim() || null,
                     egressIpId: varExitId === DEFAULT_EXIT_SENTINEL ? null : varExitId,
                     ...(varProtocols !== null ? { enabledProtocols: varProtocols } : {}),
+                    ...(varAutoRotate
+                      ? {
+                          egressAutoRotateEnabled: true,
+                          egressAutoRotatePoolIds: varAutoRotatePool,
+                        }
+                      : {}),
                   });
                   setVarCustomName("");
                   setVarProtocols(null);
+                  setVarAutoRotate(false);
+                  setVarAutoRotatePool([]);
                 });
               }}
             >
@@ -1855,6 +1957,64 @@ export function NodeTopologyDialogBody({
                     })
                   : null}
               </div>
+              {exits.length > 0 ? (
+                <div className="space-y-1.5 rounded border border-border/60 bg-well/60 p-2">
+                  <div className="flex flex-wrap items-center gap-2">
+                    <label className="flex items-center gap-1.5 font-medium">
+                      <Checkbox
+                        checked={varAutoRotate}
+                        onChange={(e) => {
+                          const next = e.target.checked;
+                          setVarAutoRotate(next);
+                          if (next && varAutoRotatePool.length === 0) {
+                            setVarAutoRotatePool(
+                              exits.filter((x) => x.enabled).map((x) => x.id),
+                            );
+                          }
+                        }}
+                      />
+                      <span>{t("egress.autoRotateLabel")}</span>
+                    </label>
+                    <Hint>{t("egress.autoRotateHint")}</Hint>
+                  </div>
+                  {varAutoRotate ? (
+                    <div className="space-y-1 pl-5">
+                      {node.egressMode !== "routed" ? (
+                        <p className="text-[11px] text-warning">
+                          {t("egress.autoRotateRoutedWarning")}
+                        </p>
+                      ) : null}
+                      <p className="text-[11px] text-muted-foreground">
+                        {t("egress.autoRotatePoolLabel")}:
+                      </p>
+                      <div className="flex flex-wrap gap-x-3 gap-y-1">
+                        {exits.map((exit) => (
+                          <label key={exit.id} className="flex items-center gap-1.5">
+                            <Checkbox
+                              checked={varAutoRotatePool.includes(exit.id)}
+                              onChange={(e) => {
+                                setVarAutoRotatePool((prev) =>
+                                  e.target.checked
+                                    ? [...new Set([...prev, exit.id])]
+                                    : prev.filter((id) => id !== exit.id),
+                                );
+                              }}
+                            />
+                            <span className="font-mono">
+                              {exit.label ? `${exit.label} (${exit.ipv4})` : exit.ipv4}
+                            </span>
+                          </label>
+                        ))}
+                      </div>
+                      {varAutoRotatePool.length === 0 ? (
+                        <p className="text-[11px] text-destructive">
+                          {t("egress.autoRotatePoolEmpty")}
+                        </p>
+                      ) : null}
+                    </div>
+                  ) : null}
+                </div>
+              ) : null}
               {quickPickIps.length > 0 ? (
                 <div className="flex flex-wrap items-center gap-1 pt-0.5">
                   <span className="text-[11px] text-muted-foreground">{t("egress.pickHostIp")}</span>
@@ -1875,7 +2035,15 @@ export function NodeTopologyDialogBody({
                   ))}
                 </div>
               ) : null}
-              <Button type="submit" size="sm" disabled={busy !== null || !varAddress.trim()}>
+              <Button
+                type="submit"
+                size="sm"
+                disabled={
+                  busy !== null ||
+                  !varAddress.trim() ||
+                  (varAutoRotate && varAutoRotatePool.length === 0)
+                }
+              >
                 <Plus className="size-3.5" /> {t("egress.addVariantBtn")}
               </Button>
             </form>

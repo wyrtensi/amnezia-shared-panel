@@ -409,4 +409,32 @@ describe("summarizeNodeEgress & NodeTopologyDialog", () => {
     ).toBe(tRu("egress.subnetWarningSame24", { entry: "198.51.100.10" }));
     expect(formatSubnetProximityWarning("Custom warning", tRu)).toBe("Custom warning");
   });
+
+  it("renders auto-rotation badge and controls when an endpoint enables Exit IP auto-rotation", () => {
+    const base = makeNode();
+    const baseEndpoint = base.publicEndpoints?.[0];
+    if (!baseEndpoint) throw new Error("Expected fixture endpoint");
+    const html = renderToStaticMarkup(
+      <TooltipProvider>
+        <NodeTopologyDialogBody
+          node={makeNode({
+            publicEndpoints: [
+              {
+                ...baseEndpoint,
+                egressAutoRotateEnabled: true,
+                egressAutoRotatePoolIds: ["ip-1", "ip-2"],
+                egressAutoRotatedAt: "2026-11-28T09:00:00.000Z",
+              },
+            ],
+          })}
+          request={() => Promise.resolve({} as never)}
+          reload={() => Promise.resolve()}
+          onSavePublicEndpoint={() => Promise.resolve()}
+        />
+      </TooltipProvider>,
+    );
+
+    expect(html).toContain(tRu("egress.autoRotateBadge", { count: 2 }));
+    expect(html).toContain(tRu("egress.autoRotateLabel"));
+  });
 });

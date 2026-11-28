@@ -7,6 +7,8 @@ import {
   isIpLiteral,
   isIpv4Literal,
   isProbeStale,
+  NODE_SYNC_EGRESS_JOB_TYPE,
+  nodeRunsCheck,
   nodeServedProtocols,
   probeCapabilityInputOf,
   PROBE_STALE_GRACE_SEC,
@@ -32,6 +34,7 @@ import {
   deterministicPeerLabel,
   jobOutbox,
   keyOwnerIsPerson,
+  nodeEgressServiceCheckResults,
   nodeReachabilityHistory,
   nodeReachabilityResults,
   nodeReachabilityState,
@@ -64,6 +67,11 @@ import {
   writeCandidateVerification,
 } from "./bridgeCandidateRepository.js";
 import { bridgeExternalVerdict, bridgeHostTargetId } from "./bridgeReachability.js";
+import {
+  formatEgressAutoRotateNotice,
+  selectAutoRotateExitIp,
+  shouldTriggerEgressAutoRotate,
+} from "./egressAutoRotate.js";
 import {
   alertClock,
   measuredViaBridge,
@@ -577,6 +585,243 @@ export class PostgresReachabilityRepository
           .where(eq(nodeVpnEndpoints.id, outcome.endpointId));
       }
 
+      const rotationNotices: Notice[] = [];
+      const rotatedNodeIds = new Set<string>();
+      const outcomeByEndpointId = new Map(
+        write.addressOutcomes.map((outcome) => [outcome.endpointId, outcome]),
+      );
+      const addressRowById = new Map(addressRows.map((row) => [row.id, row]));
+      const candidateEndpointIds = write.mass
+        ? []
+        : addressRows
+            .filter((row) => {
+              if (!row.enabled || !row.egressAutoRotateEnabled) return false;
+              const outcome = outcomeByEndpointId.get(row.id);
+              return (
+                outcome?.status === "failed" && outcome.state.alertedAt !== null
+              );
+            })
+            .sort((a, b) => a.ordinal - b.ordinal)
+            .map((row) => row.id);
+
+      if (candidateEndpointIds.length > 0) {
+        const affectedNodeIds = [
+          ...new Set(
+            candidateEndpointIds
+              .map((id) => addressRowById.get(id)?.nodeId)
+              .filter((id): id is string => Boolean(id)),
+          ),
+        ];
+        const [affectedNodes, allNodeEndpoints, allNodeExits, failingCheckRows] =
+          await Promise.all([
+            tx
+              .select({
+                id: nodes.id,
+                name: nodes.name,
+                egressMode: nodes.egressMode,
+                egressDefaultIpId: nodes.egressDefaultIpId,
+                checksEnabled: nodes.checksEnabled,
+                disabledCheckIds: nodes.disabledCheckIds,
+              })
+              .from(nodes)
+              .where(inArray(nodes.id, affectedNodeIds)),
+            tx
+              .select({
+                id: nodeVpnEndpoints.id,
+                nodeId: nodeVpnEndpoints.nodeId,
+                ordinal: nodeVpnEndpoints.ordinal,
+                name: nodeVpnEndpoints.name,
+                address: nodeVpnEndpoints.address,
+                egressIpId: nodeVpnEndpoints.egressIpId,
+                enabled: nodeVpnEndpoints.enabled,
+                egressAutoRotateEnabled: nodeVpnEndpoints.egressAutoRotateEnabled,
+                egressAutoRotatePoolIds: nodeVpnEndpoints.egressAutoRotatePoolIds,
+                egressAutoRotatedAt: nodeVpnEndpoints.egressAutoRotatedAt,
+                probeStatus: nodeVpnEndpoints.probeStatus,
+                probeAlertedAt: nodeVpnEndpoints.probeAlertedAt,
+              })
+              .from(nodeVpnEndpoints)
+              .where(inArray(nodeVpnEndpoints.nodeId, affectedNodeIds)),
+            tx
+              .select({
+                id: nodeEgressIps.id,
+                nodeId: nodeEgressIps.nodeId,
+                ipv4: nodeEgressIps.ipv4,
+                label: nodeEgressIps.label,
+                enabled: nodeEgressIps.enabled,
+                hostState: nodeEgressIps.hostState,
+              })
+              .from(nodeEgressIps)
+              .where(inArray(nodeEgressIps.nodeId, affectedNodeIds))
+              .orderBy(asc(nodeEgressIps.routingTableId), asc(nodeEgressIps.ipv4)),
+            tx
+              .select({
+                nodeId: nodeEgressIps.nodeId,
+                egressIpId: nodeEgressServiceCheckResults.egressIpId,
+                checkId: nodeEgressServiceCheckResults.checkId,
+              })
+              .from(nodeEgressServiceCheckResults)
+              .innerJoin(
+                nodeEgressIps,
+                eq(nodeEgressIps.id, nodeEgressServiceCheckResults.egressIpId),
+              )
+              .where(
+                and(
+                  inArray(nodeEgressIps.nodeId, affectedNodeIds),
+                  eq(nodeEgressServiceCheckResults.status, "failed"),
+                ),
+              ),
+          ]);
+
+        const affectedNodeById = new Map(affectedNodes.map((n) => [n.id, n]));
+        const exitsByNode = new Map<string, typeof allNodeExits>();
+        for (const exitRow of allNodeExits) {
+          const list = exitsByNode.get(exitRow.nodeId) ?? [];
+          list.push(exitRow);
+          exitsByNode.set(exitRow.nodeId, list);
+        }
+
+        const failingCheckExitsByNode = new Map<string, Set<string>>();
+        for (const checkRow of failingCheckRows) {
+          const node = affectedNodeById.get(checkRow.nodeId);
+          if (!node || !nodeRunsCheck(node, checkRow.checkId)) continue;
+          const set = failingCheckExitsByNode.get(checkRow.nodeId) ?? new Set<string>();
+          set.add(checkRow.egressIpId);
+          failingCheckExitsByNode.set(checkRow.nodeId, set);
+        }
+
+        const siblingExitByGroup = new Map<string, Map<string, string | null>>();
+        const unhealthyExitsByNode = new Map<string, Set<string>>();
+        for (const ep of allNodeEndpoints) {
+          const groupKey = `${ep.nodeId}:${ep.address}`;
+          const group = siblingExitByGroup.get(groupKey) ?? new Map<string, string | null>();
+          group.set(ep.id, ep.egressIpId ?? null);
+          siblingExitByGroup.set(groupKey, group);
+
+          const node = affectedNodeById.get(ep.nodeId);
+          const epOutcome = outcomeByEndpointId.get(ep.id);
+          const isUnhealthy =
+            epOutcome?.status === "failed" ||
+            (!epOutcome && ep.probeStatus === "failed" && ep.probeAlertedAt !== null);
+          if (isUnhealthy && node) {
+            const effectiveExitId = ep.egressIpId ?? node.egressDefaultIpId ?? null;
+            if (effectiveExitId) {
+              const set = unhealthyExitsByNode.get(ep.nodeId) ?? new Set<string>();
+              set.add(effectiveExitId);
+              unhealthyExitsByNode.set(ep.nodeId, set);
+            }
+          }
+        }
+
+        for (const epId of candidateEndpointIds) {
+          const ep = addressRowById.get(epId);
+          const outcome = outcomeByEndpointId.get(epId);
+          if (!ep || !outcome) continue;
+          const node = affectedNodeById.get(ep.nodeId);
+          if (!node) continue;
+          if (
+            !shouldTriggerEgressAutoRotate({
+              massFailure: write.mass,
+              nodeEgressMode: node.egressMode,
+              endpoint: ep,
+              outcome,
+              failThreshold: claimed.failThreshold,
+              now: run.now,
+            })
+          ) {
+            continue;
+          }
+
+          const groupKey = `${ep.nodeId}:${ep.address}`;
+          const siblingMap = siblingExitByGroup.get(groupKey) ?? new Map<string, string | null>();
+          const occupiedSiblingExitIds = new Set<string>();
+          for (const [sibId, exitId] of siblingMap) {
+            if (sibId !== ep.id && exitId) occupiedSiblingExitIds.add(exitId);
+          }
+
+          const selection = selectAutoRotateExitIp({
+            endpoint: {
+              id: ep.id,
+              address: ep.address,
+              egressIpId: ep.egressIpId ?? null,
+              egressAutoRotatePoolIds: ep.egressAutoRotatePoolIds ?? [],
+            },
+            nodeEgressDefaultIpId: node.egressDefaultIpId ?? null,
+            nodeExits: exitsByNode.get(ep.nodeId) ?? [],
+            occupiedSiblingExitIds,
+            failingExitCheckIds: failingCheckExitsByNode.get(ep.nodeId) ?? new Set<string>(),
+            unhealthyEndpointExitIds: unhealthyExitsByNode.get(ep.nodeId) ?? new Set<string>(),
+          });
+          if (!selection) continue;
+
+          siblingMap.set(ep.id, selection.nextExit.id);
+          await tx
+            .update(nodeVpnEndpoints)
+            .set({
+              egressIpId: selection.nextExit.id,
+              egressAutoRotatedAt: run.now,
+              revision: sql`${nodeVpnEndpoints.revision} + 1`,
+              probeStatus: null,
+              probeLevels: null,
+              probeCheckedAt: null,
+              probeConsecutiveFailures: 0,
+              probeFailingSince: null,
+              probeObservedEgressIp: null,
+              probeEgressMatch: null,
+              probeDetail: "auto-rotated exit IP; waiting for measurement",
+            })
+            .where(eq(nodeVpnEndpoints.id, ep.id));
+          await tx
+            .delete(nodeReachabilityResults)
+            .where(
+              and(
+                eq(nodeReachabilityResults.nodeId, ep.nodeId),
+                eq(nodeReachabilityResults.protocol, "awg3"),
+              ),
+            );
+          await tx.insert(auditEvents).values({
+            actorType: "system",
+            action: "node.endpoint_egress_auto_rotated",
+            targetType: "node",
+            targetId: ep.nodeId,
+            metadata: {
+              endpointId: ep.id,
+              address: ep.address,
+              previousExitIpId: selection.previousExit?.id ?? null,
+              previousExitIpv4: selection.previousExit?.ipv4 ?? null,
+              nextExitIpId: selection.nextExit.id,
+              nextExitIpv4: selection.nextExit.ipv4,
+              runId: run.runId,
+            },
+          });
+          rotationNotices.push({
+            dedupKey: `${REACHABILITY_NOTIFY_JOB_TYPE}:egress-auto-rotate:${ep.id}:${run.runId}`,
+            text: formatEgressAutoRotateNotice({
+              nodeName: node.name,
+              endpointName: ep.name,
+              address: ep.address,
+              previousExit: selection.previousExit,
+              nextExit: selection.nextExit,
+            }),
+          });
+          rotatedNodeIds.add(ep.nodeId);
+        }
+
+        if (rotatedNodeIds.size > 0) {
+          await tx.insert(jobOutbox).values(
+            [...rotatedNodeIds].map((nodeId) => ({
+              type: NODE_SYNC_EGRESS_JOB_TYPE,
+              deduplicationKey: `${NODE_SYNC_EGRESS_JOB_TYPE}:${nodeId}:${randomUUID()}`,
+              payload: { nodeId },
+            })),
+          );
+          await tx
+            .update(reachabilityProbe)
+            .set({ runRequestedAt: run.now, updatedAt: new Date() })
+            .where(eq(reachabilityProbe.id, 1));
+        }
+      }
+
       // Every node here is locked, so none can be deleted before the commit.
       const nodeIds = new Set(targets.map((target) => target.nodeId));
       for (const nodeId of nodeIds) {
@@ -668,7 +913,7 @@ export class PostgresReachabilityRepository
       }
 
       const bridgeNotices = await this.writeBridgeProbeStates(tx, run, targets, write.outcomes, claimed);
-      const notices = [...write.notices, ...bridgeNotices];
+      const notices = [...write.notices, ...bridgeNotices, ...rotationNotices];
       if (notices.length > 0) {
         await tx.insert(jobOutbox).values(outboxRows(notices)).onConflictDoNothing();
       }
