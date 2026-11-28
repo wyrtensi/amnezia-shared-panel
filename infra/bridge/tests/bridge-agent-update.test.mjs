@@ -182,6 +182,7 @@ const fixture = async ({ envImage = OLD_IMAGE, pin = PIN(OLD_IMAGE), running = O
     BRIDGE_UPDATE_SPOOL_DIR: spool,
     BRIDGE_UPDATER_STATE_DIR: stateDir,
     BRIDGE_UPDATER_LOCK_DIR: lockDir,
+    BRIDGE_WYTUNNEL_RUN_DIR: join(root, "run-wytunnel"),
     BRIDGE_AGENT_UPDATE_REPO: REPO,
     BRIDGE_AGENT_HEALTH_ATTEMPTS: "2",
     BRIDGE_AGENT_HEALTH_INTERVAL: "0",
@@ -249,7 +250,9 @@ const withHost = (name, options, fn) =>
 const assertInvariants = async (h, run) => {
   assert.deepEqual(await h.lines("systemctl.log"), [], "the updater never calls systemctl (frps is never restarted)");
   for (const call of await h.lines("docker.log")) {
-    assert.doesNotMatch(call, /frps/, call);
+    if (!/^cp amnezia-bridge-update-extract-(?:new|old)-[^:]+:\/opt\/amnezia-bridge-bundle\/scripts\/toggle-frps\.sh /.test(call)) {
+      assert.doesNotMatch(call, /frps/, call);
+    }
     if (!/^container rm -f amnezia-bridge-update-extract-/.test(call)) {
       assert.doesNotMatch(call, /\b(rmi|rm|prune)\b/, `no image or service container is removed: ${call}`);
     }

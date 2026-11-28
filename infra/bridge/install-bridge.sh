@@ -307,7 +307,11 @@ fi
 
 # Pre-create /run/amnezia-wytunnel and persist via tmpfiles.d before Docker starts
 # so the :ro compose mount never binds to a stale/missing tmpfs inode after reboot.
-WYTUNNEL_RUN_DIR="${BRIDGE_WYTUNNEL_RUN_DIR:-/run/amnezia-wytunnel}"
+DEFAULT_WYTUNNEL_RUN_DIR="/run/amnezia-wytunnel"
+if [ -n "${AMNEZIA_VAR:-}" ]; then
+  DEFAULT_WYTUNNEL_RUN_DIR="$VAR/run/amnezia-wytunnel"
+fi
+WYTUNNEL_RUN_DIR="${BRIDGE_WYTUNNEL_RUN_DIR:-$DEFAULT_WYTUNNEL_RUN_DIR}"
 TMPFILES_DIR="${AMNEZIA_TMPFILES_DIR:-$ETC/tmpfiles.d}"
 mkdir -p "$WYTUNNEL_RUN_DIR" "$TMPFILES_DIR"
 chmod 0755 "$WYTUNNEL_RUN_DIR"
